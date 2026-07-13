@@ -1,0 +1,8 @@
+{
+  "name": "counterlane-2x2-tiny-exact-edit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node visible-check.mjs"
+  }
+}

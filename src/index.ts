@@ -1,0 +1,23 @@
+export { CodexAppServer } from "./codex/app-server.js";
+export { AutoRouter } from "./routing/router.js";
+export { buildCalibrationIndex, calibrationFor, routeCalibrationKey, routeObservationPayload } from "./routing/calibration.js";
+export { inspectVerificationCapabilities, resolveVerificationCommands, commandsForProofTier, proofTierRank } from "./verification/detect.js";
+export { TelemetryStore } from "./telemetry/store.js";
+export { createLinkedAbortScope } from "./core/abort.js";
+export { TwinRunner } from "./runner/twin.js";
+export { SingleRunner } from "./runner/single.js";
+export { GitRepository } from "./git/repository.js";
+export { BlindVerifier } from "./verification/verifier.js";
+export { loadConfig, writeDefaultConfig } from "./config/load.js";
+export { DEFAULT_CONFIG } from "./config/defaults.js";
+export type * from "./core/types.js";
+export type * from "./config/types.js";
+export { MetaController } from "./meta/controller.js";
+export { buildMetaContext } from "./meta/context.js";
+export { estimateUpliftPosterior, parsePairedObservations } from "./meta/evidence.js";
+export { prepareMetaPlan } from "./meta/planner.js";
+export { MetaExecutionRunner } from "./runner/meta.js";
+export { runMcpStdioServer, runMcpHttpServer } from "./mcp/server.js";
+export { COUNTERLANE_TOOLS, callCounterlaneTool } from "./mcp/tools.js";
+
+export { COUNTERLANE_BUILD_ID } from "./identity.js";

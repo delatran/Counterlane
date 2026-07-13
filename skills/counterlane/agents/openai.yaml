@@ -1,0 +1,8 @@
+interface:
+  display_name: "Counterlane"
+  short_description: "Route model, effort, speed, and verification"
+  brand_color: "#4D5BCE"
+  default_prompt: "Use $counterlane to route this task across model, reasoning effort, speed tier, topology, and verification."
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "studyId": "counterlane-codex-app-long-token-v6",
+  "phase": "exploratory-smoke",
+  "preregisteredAt": "2026-07-12T12:13:49.560Z",
+  "question": "On one longer multi-requirement implementation task in the current Codex application runtime, does Counterlane Auto use fewer gross total tokens than native Codex pinned to the owner's current route while retaining the same hidden-oracle verified success?",
+  "hypothesis": "Counterlane Auto will retain hidden-oracle verified success and use at least 10% fewer gross total tokens than native GPT-5.6 Sol at xhigh reasoning and standard speed.",
+  "claimBoundary": "This one-task, one-replicate paired exploratory study measures only the observed result on this exact fixture, live model catalog, sequential per-arm quota snapshots, runtime, randomized order, and code build. Counterlane-selected model, effort, speed, topology, and proof changes are the ON treatment, not contamination. A claim is forbidden if either hidden oracle fails, Auto-route evidence is inadmissible or incoherent, either backend reports a reroute, quota parity fails, or any cell is contaminated/noncompliant. No statistical or general efficacy claim is permitted. The external oracle is undisclosed to the task prompt but OS-level read isolation from the model process is unverified.",
+  "experimentalUnit": "A fresh copy of the same longer implementation fixture assigned to native Codex OFF or Counterlane Auto ON on the same local Codex application runtime.",
+  "hostSurfaces": [
+    "codex"
+  ],
+  "counterlaneStates": [
+    false,
+    true
+  ],
+  "repetitions": 1,
+  "randomization": {
+    "seed": "counterlane-codex-app-long-token-v6",
+    "algorithm": "sha256-xorshift32-fisher-yates-v1",
+    "blockBy": [
+      "taskId",
+      "replicate"
+    ]
+  },
+  "codex": {
+    "command": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "speed": "standard",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "disablePlugins": true,
+    "ephemeral": true,
+    "turnTimeoutMs": 1800000
+  },
+  "counterlane": {
+    "cli": "dist/cli.js",
+    "mode": "auto",
+    "apply": true
+  },
+  "endpoints": {
+    "primary": "gross total_tokens difference, interpreted only when both arms achieve external hidden-oracle verified success",
+    "secondary": [
+      "structured input, cached-input, uncached-input, output, and reasoning-output token counts",
+      "end-to-end duration milliseconds",
+      "selected model, reasoning effort, speed, topology, and proof tier",
+      "live model-catalog parity and sequential per-arm quota snapshots",
+      "bad escape",
+      "treatment compliance",
+      "contamination incidence"
+    ]
+  },
+  "successDefinition": {
+    "verifiedSuccess": "The assigned run completes, the common visible verifier passes, and the external hidden oracle passes.",
+    "badEscape": "The assigned run completes and the common visible verifier passes, but the external hidden oracle fails."
+  },
+  "runtimeBinding": {
+    "codexRequired": [
+      "SOURCE_MANIFEST.sha256",
+      "dist/cli.js",
+      "generated Counterlane config when enabled",
+      "Node version",
+      "Codex version",
+      "live Codex App Server model catalog",
+      "live per-arm account quota snapshot",
+      "effective Counterlane ON route derived from run.stdout.log; native OFF marked not applicable",
+      "reported backend reroute events for both native OFF and Counterlane ON",
+      "write-once attempt.json created before each expensive model execution",
+      "environment hash"
+    ]
+  },
+  "analysis": {
+    "intentionToTreat": true,
+    "retainContaminatedTrials": true,
+    "hostEffects": [
+      "codex:on-minus-off"
+    ],
+    "interaction": "not-applicable",
+    "practicalTokenSavingsThresholdPct": 10,
+    "requireBothVerifiedForTokenSavingsClaim": true,
+    "minimumCompleteTaskClustersForConfidence": 8,
+    "allowStatisticalConfidenceClaim": false
+  },
+  "stoppingRule": "Stop after native Codex OFF and Counterlane ON each start at most once and complete exactly once for the registered long task. A write-once attempt marker survives crashes; missing, duplicate, rerun, or silently discarded attempts/trials invalidate the packet.",
+  "contaminationPolicy": {
+    "retain": true,
+    "automaticCodexChecks": {
+      "maxQuotaUsedPercentDelta": 2,
+      "routeInterventionSemantics": "counterlane-auto-selection-v2",
+      "backendReroutePolicy": "reject-any-reported",
+      "expectedModelId": "gpt-5.6-sol",
+      "expectedEffort": "xhigh",
+      "expectedServiceTier": null,
+      "expectedSpeedId": "standard"
+    },
+    "labels": [
+      "human-intervention",
+      "source-drift",
+      "model-reroute",
+      "service-tier-drift",
+      "quota-interference",
+      "network-or-service-incident",
+      "verifier-flake",
+      "treatment-noncompliance",
+      "other"
+    ]
+  }
+}

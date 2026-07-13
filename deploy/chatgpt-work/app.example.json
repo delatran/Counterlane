@@ -1,0 +1,7 @@
+{
+  "apps": {
+    "counterlane": {
+      "id": "plugin_asdk_app_REPLACE_WITH_YOUR_REGISTERED_APP_ID"
+    }
+  }
+}

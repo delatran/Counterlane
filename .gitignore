@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-test/
+.counterlane/
+.codex/
+vendor/codex-protocol/
+*.log
+.DS_Store
+coverage/

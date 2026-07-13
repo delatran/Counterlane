@@ -1,0 +1,2 @@
+{"type":"model/rerouted","fromModel":"gpt-5.6-sol","toModel":"gpt-5.6-terra","reason":"synthetic native backend capacity reroute"}
+{"usage":{"totalTokens":200,"inputTokens":170,"cachedInputTokens":20,"outputTokens":30,"reasoningOutputTokens":10}}

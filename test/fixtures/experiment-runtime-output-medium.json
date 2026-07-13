@@ -1,0 +1,41 @@
+{
+  "arm": {
+    "policy": {
+      "kind": "treatment",
+      "name": "test-route-medium",
+      "modelId": "gpt-5.6-terra",
+      "modelFamily": "terra",
+      "effort": "medium",
+      "serviceTier": null,
+      "speedId": "standard",
+      "speedCostMultiplier": 1,
+      "speedLatencyMultiplier": 1,
+      "topology": "single",
+      "proofTier": "basic",
+      "routeDecision": {
+        "selected": {
+          "modelId": "gpt-5.6-terra",
+          "effort": "medium",
+          "serviceTier": null,
+          "speedId": "standard",
+          "topology": "single",
+          "proofTier": "basic",
+          "admissible": true
+        },
+        "rationale": ["synthetic integration-test medium route"]
+      }
+    },
+    "turn": {
+      "reroutes": [],
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 100,
+          "inputTokens": 80,
+          "cachedInputTokens": 20,
+          "outputTokens": 20,
+          "reasoningOutputTokens": 10
+        }
+      }
+    }
+  }
+}

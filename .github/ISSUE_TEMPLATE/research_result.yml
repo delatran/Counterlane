@@ -1,0 +1,29 @@
+name: Research result
+description: Share a reproducible routing or paired-evaluation result
+title: "[Result]: "
+labels: [research]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis and preregistered decision rule
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Tasks, repositories, model snapshot, verifier, and baselines
+    validations:
+      required: true
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Verified success, total cost, latency, bad escapes, and confidence intervals
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Reproduction artifacts or sanitized data
+    validations:
+      required: true

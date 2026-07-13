@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "counterlane": {
+      "type": "http",
+      "url": "https://YOUR_HOST.example/mcp",
+      "bearer_token_env_var": "COUNTERLANE_MCP_TOKEN"
+    }
+  }
+}

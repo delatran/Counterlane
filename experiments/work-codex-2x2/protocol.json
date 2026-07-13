@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "studyId": "counterlane-work-codex-2x2-smoke-v4",
+  "phase": "exploratory-smoke",
+  "preregisteredAt": "2026-07-12T12:13:49.560Z",
+  "question": "Does enabling Counterlane change verified task outcomes within Codex and within ChatGPT Work?",
+  "hypothesis": "Counterlane-enabled workflows may change hidden-oracle verified success, end-to-end duration, and common cost relative to the native host workflow.",
+  "claimBoundary": "This one-task smoke study validates the 2x2 workflow only. It cannot establish efficacy, causal model superiority, or statistical confidence.",
+  "experimentalUnit": "A fresh task fixture assigned to one hostSurface x counterlaneEnabled cell for one replicate.",
+  "hostSurfaces": [
+    "codex",
+    "chatgpt-work"
+  ],
+  "counterlaneStates": [
+    false,
+    true
+  ],
+  "repetitions": 1,
+  "randomization": {
+    "seed": "counterlane-work-codex-2x2-smoke-v4",
+    "algorithm": "sha256-xorshift32-fisher-yates-v1",
+    "blockBy": [
+      "taskId",
+      "replicate"
+    ]
+  },
+  "codex": {
+    "command": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "disablePlugins": true,
+    "ephemeral": true,
+    "turnTimeoutMs": 1800000
+  },
+  "counterlane": {
+    "cli": "dist/cli.js",
+    "mode": "auto",
+    "apply": true
+  },
+  "endpoints": {
+    "primary": "hidden-oracle verified success under intention-to-treat",
+    "secondary": [
+      "end-to-end duration milliseconds",
+      "common cost when a comparable unit is available",
+      "bad escape",
+      "treatment compliance",
+      "contamination incidence"
+    ]
+  },
+  "successDefinition": {
+    "verifiedSuccess": "The assigned run completes, the common visible verifier passes, and the external hidden oracle passes.",
+    "badEscape": "The assigned run completes and the common visible verifier passes, but the external hidden oracle fails."
+  },
+  "workImport": {
+    "trustBoundary": "Imported outcome booleans, compliance, cost, and artifact hashes are rejected. A local sealed bundle is replayed against a fresh fixture.",
+    "requiredBundleFiles": [
+      "final.patch",
+      "run.stdout.log",
+      "run.stderr.log"
+    ],
+    "replay": "Recompute every manifest hash, apply final.patch with argv-only git, rerun the visible verifier and external hidden oracle, then derive the trial."
+  },
+  "runtimeBinding": {
+    "codexRequired": [
+      "SOURCE_MANIFEST.sha256",
+      "dist/cli.js",
+      "generated Counterlane config when enabled",
+      "Node version",
+      "Codex version",
+      "live Codex App Server model catalog",
+      "live per-arm account quota snapshot",
+      "effective Counterlane ON route derived from run.stdout.log; native OFF marked not applicable",
+      "reported backend reroute events for both native OFF and Counterlane ON",
+      "write-once attempt.json created before each expensive Codex model execution",
+      "environment hash"
+    ],
+    "chatgptWork": "Record locally verified build/evaluator evidence and explicit unavailable values for the remote Node, Codex, and Counterlane config."
+  },
+  "analysis": {
+    "intentionToTreat": true,
+    "retainContaminatedTrials": true,
+    "hostEffects": [
+      "codex:on-minus-off",
+      "chatgpt-work:on-minus-off"
+    ],
+    "interaction": "chatgpt-work:on-minus-off minus codex:on-minus-off",
+    "minimumCompleteTaskClustersForConfidence": 8,
+    "allowStatisticalConfidenceClaim": false
+  },
+  "stoppingRule": "Stop after every Codex cell starts at most once and all four cells complete once for every registered task. Write-once Codex attempt markers survive crashes; missing, duplicate, rerun, or silently discarded attempts/trials invalidate the smoke packet.",
+  "contaminationPolicy": {
+    "retain": true,
+    "automaticCodexChecks": {
+      "maxQuotaUsedPercentDelta": 2,
+      "routeInterventionSemantics": "counterlane-auto-selection-v2",
+      "backendReroutePolicy": "reject-any-reported",
+      "expectedModelId": "gpt-5.6-sol",
+      "expectedEffort": "medium",
+      "expectedServiceTier": null,
+      "expectedSpeedId": "standard"
+    },
+    "labels": [
+      "human-intervention",
+      "source-drift",
+      "model-reroute",
+      "service-tier-drift",
+      "quota-interference",
+      "network-or-service-incident",
+      "verifier-flake",
+      "treatment-noncompliance",
+      "other"
+    ]
+  }
+}

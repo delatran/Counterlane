@@ -1,0 +1,41 @@
+{
+  "arm": {
+    "policy": {
+      "kind": "treatment",
+      "name": "test-route-fast",
+      "modelId": "gpt-5.6-sol",
+      "modelFamily": "sol",
+      "effort": "xhigh",
+      "serviceTier": "fast",
+      "speedId": "fast",
+      "speedCostMultiplier": 2,
+      "speedLatencyMultiplier": 0.5,
+      "topology": "single",
+      "proofTier": "standard",
+      "routeDecision": {
+        "selected": {
+          "modelId": "gpt-5.6-sol",
+          "effort": "xhigh",
+          "serviceTier": null,
+          "speedId": "standard",
+          "topology": "single",
+          "proofTier": "standard",
+          "admissible": true
+        },
+        "rationale": ["synthetic integration-test service-tier drift"]
+      }
+    },
+    "turn": {
+      "reroutes": [],
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 150,
+          "inputTokens": 130,
+          "cachedInputTokens": 20,
+          "outputTokens": 20,
+          "reasoningOutputTokens": 10
+        }
+      }
+    }
+  }
+}

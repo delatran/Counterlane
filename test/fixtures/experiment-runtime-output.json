@@ -1,0 +1,41 @@
+{
+  "arm": {
+    "policy": {
+      "kind": "treatment",
+      "name": "test-route",
+      "modelId": "gpt-5.6-sol",
+      "modelFamily": "sol",
+      "effort": "xhigh",
+      "serviceTier": null,
+      "speedId": "standard",
+      "speedCostMultiplier": 1,
+      "speedLatencyMultiplier": 1,
+      "topology": "single",
+      "proofTier": "standard",
+      "routeDecision": {
+        "selected": {
+          "modelId": "gpt-5.6-sol",
+          "effort": "xhigh",
+          "serviceTier": null,
+          "speedId": "standard",
+          "topology": "single",
+          "proofTier": "standard",
+          "admissible": true
+        },
+        "rationale": ["synthetic integration-test route"]
+      }
+    },
+    "turn": {
+      "reroutes": [],
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 100,
+          "inputTokens": 80,
+          "cachedInputTokens": 20,
+          "outputTokens": 20,
+          "reasoningOutputTokens": 10
+        }
+      }
+    }
+  }
+}

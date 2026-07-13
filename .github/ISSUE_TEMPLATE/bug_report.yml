@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible defect or safety invariant failure
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private source code, raw prompts, or undisclosed vulnerabilities.
+  - type: input
+    id: build
+    attributes:
+      label: Counterlane build or commit
+    validations:
+      required: true
+  - type: input
+    id: codex
+    attributes:
+      label: Codex build
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Did this cross a safety boundary?
+      options: [No, Worktree isolation, Patch application, Sandbox or approval, Verifier integrity, Telemetry privacy, Other]
+    validations:
+      required: true

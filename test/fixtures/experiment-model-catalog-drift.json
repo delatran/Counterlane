@@ -1,0 +1,22 @@
+{
+  "models": [
+    {
+      "id": "gpt-5.6-sol-drifted",
+      "model": "gpt-5.6-sol-drifted",
+      "displayName": "GPT-5.6 Sol Drifted",
+      "hidden": false,
+      "defaultReasoningEffort": "xhigh",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "xhigh"
+        }
+      ],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "isDefault": true,
+      "raw": {
+        "id": "gpt-5.6-sol-drifted"
+      }
+    }
+  ]
+}

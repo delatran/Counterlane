@@ -1,0 +1,82 @@
+{
+  "name": "counterlane",
+  "version": "0.1.0",
+  "description": "Evidence-driven adaptive compute control for Codex across model, reasoning effort, speed tier, topology, and verification.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "counterlane": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "experiments",
+    "skills",
+    ".agents",
+    ".codex-plugin",
+    ".mcp.json",
+    "deploy",
+    "scripts",
+    "SOURCE_MANIFEST.sha256",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "counterlane.config.example.json",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test:built": "npm run build:test && node scripts/run-tests.mjs",
+    "test": "npm run build && npm run test:built",
+    "plugin:validate": "node scripts/validate-plugin.mjs",
+    "source-manifest:generate": "node scripts/source-manifest.mjs generate",
+    "source-manifest:check": "node scripts/source-manifest.mjs check",
+    "check": "npm run typecheck && npm run build && npm run source-manifest:check && npm run plugin:validate && npm run test:built",
+    "start": "node dist/cli.js",
+    "dev": "npm run build && node dist/cli.js",
+    "protocol:generate": "node scripts/generate-codex-protocol.mjs",
+    "demo:create": "node scripts/create-demo-repo.mjs",
+    "experiment:2x2:plan": "node scripts/experiment-2x2.mjs plan --protocol experiments/work-codex-2x2/protocol.codex-app.json",
+    "experiment:2x2:analyze": "node scripts/experiment-2x2.mjs analyze --protocol experiments/work-codex-2x2/protocol.codex-app.json",
+    "plugin:install-local": "node scripts/install-local-plugin.mjs"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "model-routing",
+    "reasoning-effort",
+    "fast-mode",
+    "service-tier",
+    "coding-agent",
+    "counterfactual",
+    "verification",
+    "llm-router",
+    "mcp",
+    "codex-plugin",
+    "chatgpt-work"
+  ],
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^22.20.1",
+    "typescript": "^5.8.3"
+  },
+  "private": true
+}

@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "studyId": "counterlane-codex-app-ab-smoke-v5",
+  "phase": "exploratory-smoke",
+  "preregisteredAt": "2026-07-12T12:13:49.560Z",
+  "question": "On the current Codex application runtime, does enabling Counterlane change the verified outcome, duration, or comparable cost relative to native Codex pinned to the user's current route?",
+  "hypothesis": "Counterlane Auto may retain hidden-oracle verified success while changing duration and comparable cost relative to native GPT-5.6 Sol at xhigh reasoning and standard speed.",
+  "claimBoundary": "This one-task paired smoke study measures only the observed result on this exact fixture, live model catalog, sequential per-arm quota snapshots, runtime, and code build. Contaminated or noncompliant cells and paired quota/route checks remain descriptive intention-to-treat outcomes and are never token-claim eligible. It cannot establish general Counterlane efficacy or statistical confidence. The external oracle is undisclosed to the task prompt but OS-level read isolation from the model process is unverified.",
+  "experimentalUnit": "A fresh copy of the same task fixture assigned to native Codex OFF or Counterlane ON on the same local Codex application runtime.",
+  "hostSurfaces": [
+    "codex"
+  ],
+  "counterlaneStates": [
+    false,
+    true
+  ],
+  "repetitions": 1,
+  "randomization": {
+    "seed": "counterlane-codex-app-ab-smoke-v5",
+    "algorithm": "sha256-xorshift32-fisher-yates-v1",
+    "blockBy": [
+      "taskId",
+      "replicate"
+    ]
+  },
+  "codex": {
+    "command": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "speed": "standard",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "disablePlugins": true,
+    "ephemeral": true,
+    "turnTimeoutMs": 1800000
+  },
+  "counterlane": {
+    "cli": "dist/cli.js",
+    "mode": "auto",
+    "apply": true
+  },
+  "endpoints": {
+    "primary": "hidden-oracle verified success under intention-to-treat",
+    "secondary": [
+      "end-to-end duration milliseconds",
+      "common cost when a comparable unit is available",
+      "structured input, cached-input, uncached-input, output, and reasoning-output token counts",
+      "live model-catalog parity and sequential per-arm quota snapshots",
+      "effective Counterlane route for ON; not-applicable route status for native OFF",
+      "bad escape",
+      "treatment compliance",
+      "contamination incidence"
+    ]
+  },
+  "successDefinition": {
+    "verifiedSuccess": "The assigned run completes, the common visible verifier passes, and the external hidden oracle passes.",
+    "badEscape": "The assigned run completes and the common visible verifier passes, but the external hidden oracle fails."
+  },
+  "runtimeBinding": {
+    "codexRequired": [
+      "SOURCE_MANIFEST.sha256",
+      "dist/cli.js",
+      "generated Counterlane config when enabled",
+      "Node version",
+      "Codex version",
+      "live Codex App Server model catalog",
+      "live per-arm account quota snapshot",
+      "effective Counterlane ON route derived from run.stdout.log; native OFF marked not applicable",
+      "reported backend reroute events for both native OFF and Counterlane ON",
+      "write-once attempt.json created before each expensive model execution",
+      "environment hash"
+    ]
+  },
+  "analysis": {
+    "intentionToTreat": true,
+    "retainContaminatedTrials": true,
+    "hostEffects": [
+      "codex:on-minus-off"
+    ],
+    "interaction": "not-applicable",
+    "minimumCompleteTaskClustersForConfidence": 8,
+    "allowStatisticalConfidenceClaim": false
+  },
+  "stoppingRule": "Stop after native Codex OFF and Counterlane ON each start at most once and complete exactly once for every registered task. Write-once attempt markers survive crashes; missing, duplicate, rerun, or silently discarded attempts/trials invalidate the smoke packet.",
+  "contaminationPolicy": {
+    "retain": true,
+    "automaticCodexChecks": {
+      "maxQuotaUsedPercentDelta": 2,
+      "routeInterventionSemantics": "counterlane-auto-selection-v2",
+      "backendReroutePolicy": "reject-any-reported",
+      "expectedModelId": "gpt-5.6-sol",
+      "expectedEffort": "xhigh",
+      "expectedServiceTier": null,
+      "expectedSpeedId": "standard"
+    },
+    "labels": [
+      "human-intervention",
+      "source-drift",
+      "model-reroute",
+      "service-tier-drift",
+      "quota-interference",
+      "network-or-service-incident",
+      "verifier-flake",
+      "treatment-noncompliance",
+      "other"
+    ]
+  }
+}

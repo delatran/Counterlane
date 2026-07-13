@@ -1,0 +1,37 @@
+{
+  "name": "counterlane",
+  "description": "Evidence-driven adaptive compute control for Codex across model, reasoning effort, speed tier, topology, and verification.",
+  "author": {
+    "name": "Counterlane Contributors"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "adaptive-compute",
+    "model-routing",
+    "reasoning-effort",
+    "speed-tier",
+    "verification",
+    "counterfactual"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Counterlane",
+    "shortDescription": "Route Codex intelligence, depth, and speed",
+    "longDescription": "Counterlane selects the Codex model, reasoning effort, speed/service tier, execution topology, and verifier. Its self-falsifying controller can retain the control lane, route adaptively, compare paired counterfactual lanes, or abstain when evidence is insufficient.",
+    "developerName": "Counterlane Contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Route this task with Counterlane.",
+      "Compare the adaptive lane against the static control lane.",
+      "Explain the model, effort, speed, topology, and proof choice."
+    ],
+    "brandColor": "#4D5BCE"
+  }
+}

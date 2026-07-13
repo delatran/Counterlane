@@ -1,0 +1,13 @@
+{
+  "primary": {
+    "limitId": "codex",
+    "primary": {
+      "usedPercent": 20,
+      "windowDurationMins": 300,
+      "resetsAt": 1783832400
+    }
+  },
+  "byId": {},
+  "planType": "test",
+  "raw": {}
+}

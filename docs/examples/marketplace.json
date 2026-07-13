@@ -1,0 +1,20 @@
+{
+  "name": "personal",
+  "interface": {
+    "displayName": "Personal plugins"
+  },
+  "plugins": [
+    {
+      "name": "counterlane",
+      "source": {
+        "source": "local",
+        "path": "./plugins/counterlane"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
