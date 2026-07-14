@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { CodexAppServer } from "../codex/app-server.js";
 import { loadConfig } from "../config/load.js";
 import { managedStatePrefixes } from "../config/managed-state.js";
@@ -10,33 +11,55 @@ import { isJsonObject, type JsonObject, type JsonValue } from "../core/json.js";
 import { Logger } from "../core/logger.js";
 import type {
   ExperimentResult,
-  MetaExecutionResult,
+  ExecutionEnvelope,
   ModelCatalog,
   RouteConstraints,
   RouteDecision,
   SingleRunResult,
+  VerificationPlan,
+  VerificationReport,
 } from "../core/types.js";
 import { GitRepository } from "../git/repository.js";
 import { MetaExecutionRunner } from "../runner/meta.js";
 import { SingleRunner } from "../runner/single.js";
 import { TwinRunner } from "../runner/twin.js";
+import { executeVgcl, type VgclExecutionResult } from "../runner/vgcl.js";
+import { createExecutionEnvelope } from "../runner/envelope.js";
 import { deriveQuotaState } from "../routing/quota.js";
 import { AutoRouter } from "../routing/router.js";
 import { buildCalibrationIndex } from "../routing/calibration.js";
 import { inspectVerificationCapabilities } from "../verification/detect.js";
+import { freezeVerificationPlan, type VerificationPolicyAuthority } from "../verification/plan.js";
 import { TelemetryStore } from "../telemetry/store.js";
 import { COUNTERLANE_BUILD_ID } from "../identity.js";
 import { validateThreadProvenance } from "../core/thread-provenance.js";
+import { sha256, stableStringify, writeJsonAtomic } from "../core/utils.js";
+import { ensureContainedDirectory, resolveContainedPath } from "../core/path-safety.js";
+import {
+  buildProductReceipt,
+  redactPublicReceipt,
+  type ReceiptEvidenceKind,
+} from "../receipt/receipt.js";
 
 export const COUNTERLANE_MCP_BUILD_ID = COUNTERLANE_BUILD_ID;
 export const MCP_TRUSTED_CODEX_COMMAND_ENV = "COUNTERLANE_MCP_TRUSTED_CODEX_COMMAND";
 export const MCP_TRUSTED_CODEX_ARGS_ENV = "COUNTERLANE_MCP_TRUSTED_CODEX_ARGS_JSON";
+/** Host-owned evidence label for deterministic no-quota demonstration runs. */
+export const MCP_EVIDENCE_KIND_ENV = "COUNTERLANE_EVIDENCE_KIND";
+/**
+ * Absolute path to a host-owned Counterlane config file. Only its validated
+ * verification policy is used by MCP; every other setting remains subject to
+ * the normal MCP boundary.
+ */
+export const MCP_TRUSTED_VERIFICATION_FILE_ENV = "COUNTERLANE_MCP_TRUSTED_VERIFICATION_FILE";
 
 export interface McpToolDefinition {
   name: string;
   title: string;
   description: string;
   inputSchema: JsonObject;
+  /** Versioned machine result schema when a tool has a stable structured result. */
+  outputSchema?: JsonObject;
   annotations: JsonObject;
 }
 
@@ -57,6 +80,8 @@ export interface McpToolContext {
    * verification unless the host explicitly supplies a policy here.
    */
   trustedVerification?: CounterlaneConfig["verification"];
+  /** Host-owned evidence classification; tool arguments cannot influence it. */
+  evidenceKind?: ReceiptEvidenceKind;
   signal?: AbortSignal;
 }
 
@@ -104,7 +129,20 @@ const effortProperty: JsonObject = {
 
 const speedProperty: JsonObject = {
   type: "string",
-  description: "Optional service/speed tier such as standard or fast. Unsupported tiers are rejected.",
+  description: "Advanced/raw service-tier id. It is retained for route inspection and research tools, not the product execute UX.",
+};
+
+const speedModeProperty: JsonObject = {
+  type: "string",
+  enum: ["off", "auto", "fast"],
+  default: "auto",
+  description: "Product speed mode: Off forces Standard; Auto may use a permitted premium tier; Fast requests an advertised premium tier or fails closed.",
+};
+
+const executionContextProperty: JsonObject = {
+  type: "string",
+  enum: ["foreground", "background"],
+  description: "Whether a human is actively waiting. Auto premium speed requires an explicit foreground context.",
 };
 
 const topologyProperty: JsonObject = {
@@ -137,11 +175,73 @@ const maxCreditsProperty: JsonObject = {
   description: "Optional hard ceiling on predicted normalized credits for the selected route.",
 };
 
+const preflightOnlyProperty: JsonObject = {
+  type: "boolean",
+  default: false,
+  description: "Return the no-spend execution preflight only. No thread or model turn is created.",
+};
+
+const executeOutputSchema: JsonObject = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    schemaVersion: { type: "integer", const: 1 },
+    state: {
+      type: "string",
+      enum: [
+        "ready",
+        "configuration_required",
+        "abstain",
+        "attempted",
+        "verified",
+        "failed",
+        "cancelled",
+        "reconciliation_required",
+      ],
+    },
+    modelTurnStarted: { type: "boolean" },
+    modelTurnStartState: { type: "string", enum: ["started", "not-started", "unknown"] },
+    maxExpensiveTurns: { type: "integer", minimum: 0, maximum: 2 },
+    reservedAttempts: { type: "integer", minimum: 0, maximum: 2 },
+    spentAttempts: { type: "integer", minimum: 0, maximum: 2 },
+    unknownAttempts: { type: "integer", minimum: 0, maximum: 2 },
+    nonApplying: { type: "boolean" },
+    receiptSchemaVersion: { type: "integer", const: 1 },
+    reason: { type: "string" },
+    envelopeHash: { type: "string" },
+  },
+  required: [
+    "schemaVersion",
+    "state",
+    "modelTurnStarted",
+    "modelTurnStartState",
+    "maxExpensiveTurns",
+    "reservedAttempts",
+    "spentAttempts",
+    "unknownAttempts",
+    "nonApplying",
+    "receiptSchemaVersion",
+  ],
+};
+
 const routeHintProperties: JsonObject = {
   model: modelProperty,
   family: familyProperty,
   effort: effortProperty,
   speed: speedProperty,
+  topology: topologyProperty,
+  latencyPriority: latencyPriorityProperty,
+  proofTier: proofTierProperty,
+  deadlineMs: deadlineProperty,
+  maxCredits: maxCreditsProperty,
+};
+
+const executeRouteHintProperties: JsonObject = {
+  model: modelProperty,
+  family: familyProperty,
+  effort: effortProperty,
+  speedMode: speedModeProperty,
+  executionContext: executionContextProperty,
   topology: topologyProperty,
   latencyPriority: latencyPriorityProperty,
   proofTier: proofTierProperty,
@@ -168,17 +268,17 @@ export const COUNTERLANE_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "counterlane_decide",
-    title: "Choose Static, Auto, Twin, or Abstain",
+    title: "Research: inspect Static, Auto, Twin, or Abstain",
     description:
-      "Run the self-falsifying meta-controller and decide whether Auto has earned the right to route, whether to buy a paired twin, retain the static policy, or abstain.",
+      "Read-only Research planning. Inspect whether to use a Static route, an Auto route, an explicit paired Research comparison, or abstain. It does not start a model turn.",
     inputSchema: objectSchema({ prompt: promptProperty, cwd: cwdProperty, config: configProperty, ...routeHintProperties }, ["prompt"]),
     annotations: annotations("Evaluate whether Auto should intervene", true, true),
   },
   {
     name: "counterlane_execute",
-    title: "Execute through Counterlane",
+    title: "Execute a verification-gated task",
     description:
-      "Delegate a task to Counterlane's root control plane. It may execute Static, Auto, Twin, or Abstain. Source changes are isolated and never applied by this MCP tool.",
+      "Preferred product workflow. It performs a no-spend preflight, then runs a bounded isolated verification-gated path only when trusted task-specific verification is available. Product speed is Off, Auto, or Fast; it never starts Twin, Compare, or background exploration, and source changes are never applied by this MCP tool.",
     inputSchema: objectSchema(
       {
         prompt: promptProperty,
@@ -186,10 +286,12 @@ export const COUNTERLANE_TOOLS: McpToolDefinition[] = [
         config: configProperty,
         threadId: threadProperty,
         lastTurnId: lastTurnProperty,
-        ...routeHintProperties,
+        preflightOnly: preflightOnlyProperty,
+        ...executeRouteHintProperties,
       },
       ["prompt"],
     ),
+    outputSchema: executeOutputSchema,
     annotations: annotations("Execute an evidence-gated delegated Codex task", false, false),
   },
   {
@@ -213,9 +315,9 @@ export const COUNTERLANE_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "counterlane_compare",
-    title: "Compare Auto and No-Auto twins",
+    title: "Research: compare two isolated routes (two expensive turns)",
     description:
-      "Run paired counterfactual Codex arms from the same repository state and blind-verify the results. The original repository is never modified by this MCP tool.",
+      "Explicit paired Research acquisition: run exactly two isolated Codex arms from the same repository state and blind-verify the results. It incurs two expensive turns, is not the default product workflow, and never modifies the original repository.",
     inputSchema: objectSchema(
       {
         prompt: promptProperty,
@@ -227,7 +329,7 @@ export const COUNTERLANE_TOOLS: McpToolDefinition[] = [
       },
       ["prompt"],
     ),
-    annotations: annotations("Run a paired causal comparison", false, false),
+    annotations: annotations("Run an explicit paired Research acquisition with two expensive turns", false, false),
   },
 ];
 
@@ -345,17 +447,343 @@ async function decideTool(args: JsonObject, context: McpToolContext): Promise<Js
 }
 
 async function executeTool(args: JsonObject, context: McpToolContext): Promise<JsonObject> {
+  const executionStartedAtClock = performance.now();
   const prompt = requiredString(args, "prompt");
   const thread = threadArguments(args);
   const workspace = await workspaceForArgs(args, context);
-  const result = await new MetaExecutionRunner(workspace).run({
-    prompt,
-    apply: false,
-    ...constraintsArgument(args),
-    ...thread,
+  const productConstraints = constraintsArgument(args, { productExecution: true });
+  const preflight = await executePreflight(prompt, productConstraints, workspace, context);
+  const preflightAndDiscoveryMs = elapsedMs(executionStartedAtClock);
+  if (preflight.output["state"] !== "ready" || optionalBoolean(args, "preflightOnly") === true) {
+    return {
+      ...preflight.output,
+      timing: {
+        clock: "monotonic-local-elapsed",
+        phasesOverlap: false,
+        preflightAndDiscoveryMs,
+      } as unknown as JsonValue,
+    };
+  }
+  // MetaExecutionRunner is intentionally not used here because its Research
+  // decision state can acquire a paired Twin. Product execution is one
+  // isolated path; Compare remains the explicit research-only tool.
+  const runner = new SingleRunner(workspace);
+  const vgcl = await executeVgcl({
+    journalRoot: await executeJournalRoot(workspace),
+    decision: preflight.decision!,
+    envelopeHash: preflight.executionEnvelope!.envelopeHash,
+    executeAttempt: async (policy, lifecycle) => runner.run({
+      prompt,
+      mode: "auto",
+      apply: false,
+      policyOverride: policy,
+      expectedRepositoryProfileHash: preflight.decision!.repo.profileHash,
+      expectedExecutionEnvelope: preflight.executionEnvelope!,
+      frozenRouteDecision: preflight.decision!,
+      verificationPlan: preflight.verificationPlan!,
+      beforeTurnStart: lifecycle.beforeTurnStart,
+      ...productConstraints,
+      ...thread,
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
+    }),
+  });
+  const receipt = buildProductReceipt({
+    execution: vgcl,
+    envelopeHash: preflight.executionEnvelope!.envelopeHash,
+    nonApplying: true,
+    evidenceKind: receiptEvidenceKind(context),
+    timing: {
+      preflightAndDiscoveryMs,
+      endToEndMs: elapsedMs(executionStartedAtClock),
+    },
+  });
+  const publicReceipt = redactPublicReceipt(receipt);
+  await persistProductReceipts(workspace, vgcl.runId, receipt, publicReceipt);
+  return summarizeVgclExecution(preflight.output, vgcl, receipt, publicReceipt);
+}
+
+function elapsedMs(startedAtClock: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAtClock));
+}
+
+async function executePreflight(
+  prompt: string,
+  productConstraints: { constraints?: RouteConstraints },
+  workspace: {
+    repository: GitRepository;
+    config: CounterlaneConfig;
+    logger: Logger;
+    telemetry: TelemetryStore;
+    verificationAuthority: VerificationPolicyAuthority;
+  },
+  context: McpToolContext,
+): Promise<{
+  output: JsonObject;
+  decision?: RouteDecision;
+  verificationPlan?: VerificationPlan;
+  executionEnvelope?: ExecutionEnvelope;
+}> {
+  const server = await CodexAppServer.connect({
+    config: workspace.config,
+    cwd: workspace.repository.root,
+    logger: workspace.logger,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
-  return summarizeMetaExecution(result);
+  try {
+    const [catalog, limits, profile, verificationCapabilities] = await Promise.all([
+      server.listModels(context.signal),
+      server.readRateLimits(context.signal),
+      workspace.repository.profile(managedStatePrefixes(workspace.config)),
+      inspectVerificationCapabilities(workspace.repository.root, workspace.config),
+    ]);
+    const quota = deriveQuotaState(limits, workspace.config.routing.reservePercent);
+    const base = {
+      schemaVersion: 1,
+      modelTurnStarted: false,
+      modelTurnStartState: "not-started",
+      maxExpensiveTurns: 2,
+      reservedAttempts: 0,
+      spentAttempts: 0,
+      unknownAttempts: 0,
+      nonApplying: true,
+      receiptSchemaVersion: 1,
+    } as const;
+    const taskSpecificCommandCount = Object.values(verificationCapabilities.taskSpecificCommandCountByTier)
+      .reduce((total, count) => total + count, 0);
+    if (verificationCapabilities.taskSpecificRequired && taskSpecificCommandCount === 0) {
+      return {
+        output: {
+          ...base,
+          state: "configuration_required",
+          reason: "A trusted task-specific verifier command is required before Counterlane can start a delegated model turn.",
+          verification: {
+            availableTiers: verificationCapabilities.availableTiers,
+            taskSpecificRequired: true,
+            fingerprint: verificationCapabilities.fingerprint,
+          },
+        },
+      };
+    }
+    const preflightFingerprint = sha256(stableStringify({
+      schemaVersion: 1,
+      sourceProfileHash: profile.profileHash,
+      catalogModelIds: catalog.models.map((model) => model.id).sort(),
+      quota,
+      verificationFingerprint: verificationCapabilities.fingerprint,
+      constraints: productConstraints.constraints ?? {},
+    }));
+    let decision: RouteDecision;
+    try {
+      decision = new AutoRouter(workspace.config).decide({
+        prompt,
+        repo: profile,
+        catalog,
+        quota,
+        verificationCapabilities,
+        // Learning remains disabled for the initial product path. Historical
+        // records stay auditable but cannot alter a delegated execution route.
+        calibration: buildCalibrationIndex([]),
+        ...productConstraints,
+      });
+    } catch (error) {
+      return {
+        output: {
+          ...base,
+          state: "abstain",
+          reason: errorMessage(error),
+          envelopeHash: preflightFingerprint,
+          rejectionReasons: [errorMessage(error)],
+        },
+      };
+    }
+    let verificationPlan: VerificationPlan;
+    try {
+      verificationPlan = await freezeVerificationPlan(
+        workspace.repository.root,
+        workspace.config,
+        decision.selected.proofTier,
+        { authority: workspace.verificationAuthority },
+      );
+    } catch (error) {
+      return {
+        output: {
+          ...base,
+          state: "configuration_required",
+          reason: `The frozen verifier plan is unsafe or unavailable: ${errorMessage(error)}`,
+          envelopeHash: preflightFingerprint,
+        },
+      };
+    }
+    if (!verificationPlan.adequate || !verificationPlan.certifying) {
+      return {
+        output: {
+          ...base,
+          state: "configuration_required",
+          reason: "The selected verifier plan lacks an intact host-owned, data-only, task-specific certification path.",
+          envelopeHash: preflightFingerprint,
+          verification: {
+            planHash: verificationPlan.planHash,
+            certifying: verificationPlan.certifying,
+            containment: verificationPlan.containment as unknown as JsonValue,
+          },
+        },
+      };
+    }
+    if (decision.features.risk >= 0.5 && verificationPlan.containment.network === "unverified") {
+      return {
+        output: {
+          ...base,
+          state: "abstain",
+          reason: "Elevated or critical product execution requires a verified network-containment adapter; this portable runtime reports network containment as unverified.",
+          envelopeHash: preflightFingerprint,
+          rejectionReasons: ["network containment is unverified for elevated/critical execution"],
+        },
+      };
+    }
+    const executionEnvelope = createExecutionEnvelope({
+      repo: profile,
+      catalog,
+      quota,
+      decision,
+      verificationPlan,
+    });
+    const envelopeHash = executionEnvelope.envelopeHash;
+    if (!decision.selected.admissible) {
+      return {
+        output: {
+          ...base,
+          state: "abstain",
+          reason: decision.selected.rejectionReasons.join("; ") || "No admissible execution route is available.",
+          envelopeHash,
+          route: summarizeRoute(decision),
+        },
+      };
+    }
+    return {
+      output: {
+        ...base,
+        state: "ready",
+        envelopeHash,
+        route: summarizeRoute(decision),
+        speed: {
+          requestedMode: decision.constraints.speedMode ?? "auto",
+          resolvedSpeed: decision.selected.speedId,
+          actualServiceTier: decision.selected.serviceTier,
+          pricingProvenance: "configured-speed-profile",
+        },
+        verification: {
+          availableTiers: verificationCapabilities.availableTiers,
+          taskSpecificRequired: verificationCapabilities.taskSpecificRequired,
+          fingerprint: verificationCapabilities.fingerprint,
+          planHash: verificationPlan.planHash,
+          certifying: verificationPlan.certifying,
+          containment: verificationPlan.containment as unknown as JsonValue,
+        },
+      },
+      decision,
+      verificationPlan,
+      executionEnvelope,
+    };
+  } finally {
+    await server.close();
+  }
+}
+
+async function executeJournalRoot(workspace: {
+  repository: GitRepository;
+  config: CounterlaneConfig;
+}): Promise<string> {
+  const dataDirectory = await executeDataDirectory(workspace);
+  return ensureContainedDirectory(
+    dataDirectory,
+    join(dataDirectory, "vgcl-journal"),
+    { target: "VGCL attempt journal directory", boundary: "Counterlane data directory" },
+  );
+}
+
+async function executeDataDirectory(workspace: {
+  repository: GitRepository;
+  config: CounterlaneConfig;
+}): Promise<string> {
+  const dataDirectory = await ensureContainedDirectory(
+    workspace.repository.root,
+    resolveContainedPath(workspace.repository.root, workspace.config.dataDirectory, {
+      target: "Counterlane data directory",
+      boundary: "repository",
+    }),
+    { target: "Counterlane data directory", boundary: "repository" },
+  );
+  return dataDirectory;
+}
+
+async function persistProductReceipts(
+  workspace: { repository: GitRepository; config: CounterlaneConfig },
+  runId: string,
+  receipt: JsonObject,
+  publicReceipt: JsonObject,
+): Promise<void> {
+  const dataDirectory = await executeDataDirectory(workspace);
+  const receiptDirectory = await ensureContainedDirectory(
+    dataDirectory,
+    join(dataDirectory, "receipts"),
+    { target: "product receipt directory", boundary: "Counterlane data directory" },
+  );
+  const localPath = resolveContainedPath(receiptDirectory, `${runId}.json`, {
+    target: "authoritative product receipt",
+    boundary: "product receipt directory",
+  });
+  const publicPath = resolveContainedPath(receiptDirectory, `${runId}.public.json`, {
+    target: "public product receipt",
+    boundary: "product receipt directory",
+  });
+  await Promise.all([
+    writeJsonAtomic(localPath, receipt),
+    writeJsonAtomic(publicPath, publicReceipt),
+  ]);
+}
+
+function summarizeVgclExecution(
+  preflight: JsonObject,
+  execution: VgclExecutionResult,
+  receipt: JsonObject,
+  publicReceipt: JsonObject,
+): JsonObject {
+  const unknownAttempts = execution.accounting.unresolved;
+  const startedAttempts = execution.accounting.modelAttempts;
+  return {
+    ...preflight,
+    state: execution.terminalState,
+    modelTurnStarted: startedAttempts > 0,
+    modelTurnStartState: unknownAttempts > 0 ? "unknown" : startedAttempts > 0 ? "started" : "not-started",
+    maxExpensiveTurns: execution.accounting.maximumAttempts,
+    reservedAttempts: execution.accounting.reserved,
+    spentAttempts: startedAttempts,
+    unknownAttempts,
+    reason: execution.terminalState === "verified"
+      ? "The bounded sequential controller reached a trusted host-verified result. External adjudication was not performed."
+      : execution.failureCause === undefined
+        ? `The bounded sequential controller ended as ${execution.terminalState}.`
+        : `The bounded sequential controller stopped after ${execution.failureCause}; no unqualified retry was started.`,
+    receipt: {
+      ...receipt,
+      ...(execution.failureCapsule === undefined ? {} : { failureCapsule: execution.failureCapsule }),
+    },
+    receiptArtifacts: {
+      runId: execution.runId,
+      localReceiptHash: receipt["receiptHash"],
+      publicReceiptHash: publicReceipt["publicReceiptHash"],
+      localPersistence: "completed",
+    } as unknown as JsonValue,
+    publicReceipt,
+  };
+}
+
+function receiptEvidenceKind(context: McpToolContext): ReceiptEvidenceKind {
+  if (context.evidenceKind !== undefined) return context.evidenceKind;
+  const configured = process.env[MCP_EVIDENCE_KIND_ENV];
+  if (configured === undefined) return "unverified";
+  if (configured === "runtime" || configured === "simulated" || configured === "unverified") return configured;
+  throw new Error(`${MCP_EVIDENCE_KIND_ENV} must be runtime, simulated, or unverified when set.`);
 }
 
 async function runTool(args: JsonObject, context: McpToolContext): Promise<JsonObject> {
@@ -396,23 +824,24 @@ async function workspaceForArgs(args: JsonObject, context: McpToolContext): Prom
   config: CounterlaneConfig;
   logger: Logger;
   telemetry: TelemetryStore;
+  verificationAuthority: VerificationPolicyAuthority;
 }> {
   const cwd = await cwdArgument(args, context);
-  const { config } = await loadConfigForArgs(cwd, args, context);
+  const { config, verificationAuthority } = await loadConfigForArgs(cwd, args, context);
   const repository = await GitRepository.discover(cwd);
   if (context.allowedRoots !== undefined) {
     await assertAllowedPath(repository.root, context.allowedRoots, "repository root");
   }
   const logger = silentLogger();
   const telemetry = new TelemetryStore(repository.root, config);
-  return { repository, config, logger, telemetry };
+  return { repository, config, logger, telemetry, verificationAuthority };
 }
 
 async function loadConfigForArgs(
   cwd: string,
   args: JsonObject,
   context: McpToolContext,
-): ReturnType<typeof loadConfig> {
+): Promise<Awaited<ReturnType<typeof loadConfig>> & { verificationAuthority: VerificationPolicyAuthority }> {
   const configPath = optionalString(args, "config");
   if (configPath !== undefined && context.allowConfigOverride === false) {
     throw new Error("Remote MCP configuration overrides are disabled by server policy.");
@@ -424,10 +853,14 @@ async function loadConfigForArgs(
   if (loaded.configPath !== null && context.allowedRoots !== undefined) {
     await assertAllowedPath(loaded.configPath, context.allowedRoots, "resolved config");
   }
-  const trustedLaunch = resolveTrustedCodexLaunch(context);
+  const [trustedLaunch, trustedVerification] = await Promise.all([
+    resolveTrustedCodexLaunch(context),
+    resolveTrustedVerification(context),
+  ]);
   return {
     ...loaded,
-    config: secureMcpConfig(loaded.config, trustedLaunch, context.trustedVerification),
+    config: secureMcpConfig(loaded.config, trustedLaunch, trustedVerification),
+    verificationAuthority: trustedVerification === undefined ? "repository" : "host",
   };
 }
 
@@ -455,7 +888,12 @@ export function secureMcpConfig(
     meta: trustedVerification === undefined
       ? { ...config.meta, enabled: false }
       : { ...config.meta },
-    verification: cloneMcpVerificationPolicy(trustedVerification ?? defaultMcpVerificationPolicy()),
+    verification: {
+      ...cloneMcpVerificationPolicy(trustedVerification ?? defaultMcpVerificationPolicy()),
+      // MCP proof is host-authorized. Require the host to state explicitly
+      // which executable check covers the delegated task contract.
+      requireTaskSpecificCheck: true,
+    },
   };
 }
 
@@ -479,6 +917,7 @@ function defaultMcpVerificationPolicy(): CounterlaneConfig["verification"] {
     },
     requireAtLeastOne: false,
     failOnNoVerifier: false,
+    requireTaskSpecificCheck: true,
     commands: [],
   };
 }
@@ -521,12 +960,31 @@ function resolveTrustedCodexLaunch(context: McpToolContext): { command: string; 
   return { command, args: parsed };
 }
 
-function constraintsArgument(args: JsonObject): { constraints?: RouteConstraints } {
-  const constraints = constraintsFromArgs(args);
+async function resolveTrustedVerification(
+  context: McpToolContext,
+): Promise<CounterlaneConfig["verification"] | undefined> {
+  if (context.trustedVerification !== undefined) return context.trustedVerification;
+  const configuredPath = process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV];
+  if (configuredPath === undefined) return undefined;
+  if (configuredPath.trim().length === 0 || !isAbsolute(configuredPath)) {
+    throw new Error(`${MCP_TRUSTED_VERIFICATION_FILE_ENV} must be an absolute host-owned config path.`);
+  }
+  const { config } = await loadConfig({ configPath: configuredPath });
+  return config.verification;
+}
+
+function constraintsArgument(
+  args: JsonObject,
+  options: { productExecution?: boolean } = {},
+): { constraints?: RouteConstraints } {
+  const constraints = constraintsFromArgs(args, options);
   return constraints === undefined ? {} : { constraints };
 }
 
-function constraintsFromArgs(args: JsonObject): RouteConstraints | undefined {
+function constraintsFromArgs(
+  args: JsonObject,
+  options: { productExecution?: boolean } = {},
+): RouteConstraints | undefined {
   const constraints: RouteConstraints = {};
   const model = optionalString(args, "model");
   if (model !== undefined && model !== "auto") constraints.modelId = model;
@@ -538,7 +996,28 @@ function constraintsFromArgs(args: JsonObject): RouteConstraints | undefined {
   const effort = optionalString(args, "effort");
   if (effort !== undefined && effort !== "auto") constraints.effort = effort;
   const speed = optionalString(args, "speed");
+  if (options.productExecution === true && speed !== undefined) {
+    throw new Error("counterlane_execute uses speedMode (off, auto, or fast), not a raw speed tier.");
+  }
   if (speed !== undefined && speed !== "auto") constraints.speedId = speed;
+  const speedMode = optionalString(args, "speedMode");
+  if (options.productExecution === true) {
+    const resolvedMode = speedMode ?? "auto";
+    if (resolvedMode !== "off" && resolvedMode !== "auto" && resolvedMode !== "fast") {
+      throw new Error("speedMode must be off, auto, or fast");
+    }
+    constraints.speedMode = resolvedMode;
+  } else if (speedMode !== undefined) {
+    throw new Error("speedMode is supported only by counterlane_execute; advanced tools use raw speed.");
+  }
+  const executionContext = optionalString(args, "executionContext");
+  if (executionContext !== undefined) {
+    if (options.productExecution !== true) throw new Error("executionContext is supported only by counterlane_execute.");
+    if (executionContext !== "foreground" && executionContext !== "background") {
+      throw new Error("executionContext must be foreground or background");
+    }
+    constraints.executionContext = executionContext;
+  }
   const topology = optionalString(args, "topology");
   if (topology !== undefined && topology !== "auto") {
     if (topology !== "single" && topology !== "ultra") throw new Error("topology must be auto, single, or ultra");
@@ -636,6 +1115,13 @@ function optionalString(args: JsonObject, key: string): string | undefined {
   return value;
 }
 
+function optionalBoolean(args: JsonObject, key: string): boolean | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
+  return value;
+}
+
 export function summarizeRoute(decision: RouteDecision): JsonObject {
   return {
     action: decision.selected.admissible ? "execute" : "abstain",
@@ -657,7 +1143,9 @@ export function summarizeRoute(decision: RouteDecision): JsonObject {
       predictedNormalizedCredits: decision.selected.predictedNormalizedCredits,
       calibrationSamples: decision.selected.calibrationSamples,
       successEstimate: decision.selected.successEstimate,
+      completionEstimateSource: decision.selected.calibrationSamples > 0 ? "empirical-blend" : "heuristic-prior",
       badEscapeEstimate: decision.selected.badEscapeEstimate,
+      badEscapeEstimateKind: "pre-turn-heuristic-risk",
       objective: decision.selected.objective,
       admissible: decision.selected.admissible,
       rejectionReasons: decision.selected.rejectionReasons,
@@ -678,9 +1166,17 @@ export function summarizeRoute(decision: RouteDecision): JsonObject {
     quota: decision.quota as unknown as JsonValue,
     verification: {
       posture: verificationPosture(decision.verificationCapabilities.commandCountByTier[decision.selected.proofTier]),
+      coverage: decision.verificationCapabilities.taskSpecificCommandCountByTier[decision.selected.proofTier] > 0
+        ? "task-specific-declared"
+        : "no-task-specific-declaration",
+      hostVerification: "not-run",
+      externalAdjudication: "not-performed",
       availableTiers: decision.verificationCapabilities.availableTiers,
       selectedCommandCount: decision.verificationCapabilities.commandCountByTier[decision.selected.proofTier],
+      selectedTaskSpecificCommandCount:
+        decision.verificationCapabilities.taskSpecificCommandCountByTier[decision.selected.proofTier],
       selectedRequiredCount: decision.verificationCapabilities.requiredCountByTier[decision.selected.proofTier],
+      taskSpecificRequired: decision.verificationCapabilities.taskSpecificRequired,
       fingerprint: decision.verificationCapabilities.fingerprint,
     },
     rationale: decision.rationale,
@@ -697,6 +1193,10 @@ export function summarizeRoute(decision: RouteDecision): JsonObject {
       predictedP90DurationMs: candidate.predictedP90DurationMs,
       predictedNormalizedCredits: candidate.predictedNormalizedCredits,
       calibrationSamples: candidate.calibrationSamples,
+      successEstimate: candidate.successEstimate,
+      badEscapeEstimate: candidate.badEscapeEstimate,
+      badEscapeEstimateKind: "pre-turn-heuristic-risk",
+      completionEstimateSource: candidate.calibrationSamples > 0 ? "empirical-blend" : "heuristic-prior",
       admissible: candidate.admissible,
       objective: candidate.objective,
       costWeight: candidate.costWeight,
@@ -737,15 +1237,34 @@ function summarizeSingle(result: SingleRunResult): JsonObject {
     policy: summarizePolicy(result.arm.policy),
     verification: {
       posture: verificationPosture(result.arm.verification.checks.length),
+      coverage: result.arm.verification.taskSpecificTotal > 0
+        ? "task-specific-declared"
+        : "no-task-specific-declaration",
       checkCount: result.arm.verification.checks.length,
-      verified: result.arm.verification.checks.length > 0 &&
-        result.arm.verification.adequate && result.arm.verification.passed,
+      hostVerified: hostVerified(result.arm.verification),
+      // Backward-compatible alias. This means host verification only; MCP
+      // never runs or implies an external hidden-oracle adjudication.
+      verified: hostVerified(result.arm.verification),
+      externalAdjudication: "not-performed",
       passed: result.arm.verification.passed,
       adequate: result.arm.verification.adequate,
       proofTier: result.arm.verification.proofTier,
       score: result.arm.verification.score,
       requiredPassed: result.arm.verification.requiredPassed,
       requiredTotal: result.arm.verification.requiredTotal,
+      taskSpecificRequired: result.arm.verification.taskSpecificRequired,
+      taskSpecificPassed: result.arm.verification.taskSpecificPassed,
+      taskSpecificTotal: result.arm.verification.taskSpecificTotal,
+      integrity: result.arm.verification.integrity ?? "unavailable",
+      integrityReasons: result.arm.verification.integrityReasons ?? [],
+      planHash: result.arm.verification.planHash ?? null,
+      containment: result.arm.verification.containment ?? {
+        filesystem: "unverified",
+        network: "unverified",
+        environment: "inherited",
+        processLimits: "unverified",
+      },
+      codeOwnership: result.arm.verification.codeOwnership ?? [],
     },
     cost: result.arm.cost as unknown as JsonValue,
     durationMs: result.durationMs,
@@ -769,19 +1288,6 @@ function summarizeExperiment(result: ExperimentResult): JsonObject {
   };
 }
 
-function summarizeMetaExecution(result: MetaExecutionResult): JsonObject {
-  return {
-    decisionId: result.decisionId,
-    action: result.decision.action,
-    reasons: result.decision.reasons,
-    execution: result.execution,
-    ...(result.single === undefined ? {} : { single: summarizeSingle(result.single) }),
-    ...(result.twin === undefined ? {} : { twin: summarizeExperiment(result.twin) }),
-    artifactPath: result.artifactPath,
-    durationMs: result.durationMs,
-  };
-}
-
 function summarizeArm(arm: ExperimentResult["control"]): JsonObject {
   return {
     successful: arm.successful,
@@ -789,14 +1295,22 @@ function summarizeArm(arm: ExperimentResult["control"]): JsonObject {
     policy: summarizePolicy(arm.policy),
     verification: {
       posture: verificationPosture(arm.verification.checks.length),
+      coverage: arm.verification.taskSpecificTotal > 0
+        ? "task-specific-declared"
+        : "no-task-specific-declaration",
       checkCount: arm.verification.checks.length,
-      verified: arm.verification.checks.length > 0 && arm.verification.adequate && arm.verification.passed,
+      hostVerified: hostVerified(arm.verification),
+      verified: hostVerified(arm.verification),
+      externalAdjudication: "not-performed",
       passed: arm.verification.passed,
       adequate: arm.verification.adequate,
       proofTier: arm.verification.proofTier,
       score: arm.verification.score,
       requiredPassed: arm.verification.requiredPassed,
       requiredTotal: arm.verification.requiredTotal,
+      taskSpecificRequired: arm.verification.taskSpecificRequired,
+      taskSpecificPassed: arm.verification.taskSpecificPassed,
+      taskSpecificTotal: arm.verification.taskSpecificTotal,
     },
     cost: arm.cost as unknown as JsonValue,
     utility: arm.utility,
@@ -808,6 +1322,10 @@ function summarizeArm(arm: ExperimentResult["control"]): JsonObject {
 
 function verificationPosture(commandCount: number): "no-verifier" | "host-authorized" {
   return commandCount === 0 ? "no-verifier" : "host-authorized";
+}
+
+function hostVerified(report: VerificationReport): boolean {
+  return report.checks.length > 0 && report.adequate && report.passed;
 }
 
 function objectSchema(properties: JsonObject, required: string[] = []): JsonObject {

@@ -17,6 +17,19 @@ interface PendingRequest {
 
 export type ServerRequestHandler = (method: string, params: JsonValue | undefined) => Promise<JsonValue>;
 
+/**
+ * JSON-RPC itself does not make requests idempotent. Keep this registry small
+ * and pessimistic: only repeated observations are eligible for transparent
+ * overload retry. State-creating methods must be reconciled by their caller
+ * instead of being replayed with a new request id.
+ */
+const RETRY_SAFE_READ_METHODS = new Set([
+  "model/list",
+  "account/read",
+  "account/rateLimits/read",
+]);
+const MAX_READ_RETRIES = 3;
+
 export class JsonRpcClient extends EventEmitter {
   readonly #transport: StdioJsonRpcTransport;
   readonly #logger: Logger;
@@ -61,17 +74,29 @@ export class JsonRpcClient extends EventEmitter {
     signal?: AbortSignal,
   ): Promise<T> {
     assertRequestTimeout(timeoutMs);
-    const maximumAttempts = 3;
+    const maximumAttempts = RETRY_SAFE_READ_METHODS.has(method) ? MAX_READ_RETRIES : 1;
+    const deadlineMs = Date.now() + timeoutMs;
     throwIfAborted(signal);
     for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
       try {
-        return (await this.#requestOnce(method, params, timeoutMs, signal)) as T;
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) {
+          throw new CodexProtocolError(`JSON-RPC request timed out: ${method}`, undefined, { method, timeoutMs });
+        }
+        return (await this.#requestOnce(method, params, remainingMs, signal)) as T;
       } catch (error) {
         const retryable = error instanceof CodexProtocolError && error.rpcCode === -32_001;
         if (!retryable || attempt === maximumAttempts) {
           throw error;
         }
         const backoffMs = 100 * 2 ** (attempt - 1) + Math.floor(Math.random() * 75);
+        if (Date.now() + backoffMs >= deadlineMs) {
+          throw new CodexProtocolError(`JSON-RPC request timed out before retry: ${method}`, undefined, {
+            method,
+            timeoutMs,
+            attempt,
+          });
+        }
         this.#logger.warn("Codex App Server is overloaded; retrying request", { method, attempt, backoffMs });
         await sleepWithSignal(backoffMs, signal);
       }

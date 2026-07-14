@@ -25,8 +25,9 @@ import {
   supportedEfforts,
 } from "../codex/catalog.js";
 import { extractTaskFeatures } from "./features.js";
+import { buildCapabilityGraph } from "./capability-graph.js";
 import { calibrationFor, routeCalibrationContext, type RouteCalibrationContext } from "./calibration.js";
-import { proofTierRank } from "../verification/detect.js";
+import { commandMinimumTier, proofTierRank } from "../verification/detect.js";
 
 const BASE_CAPABILITY: Record<ModelFamily, number> = {
   luna: 0.6,
@@ -123,16 +124,12 @@ export class AutoRouter {
       throw new Error(`No Codex route matches the requested constraints: ${formatConstraints(constraints)}.`);
     }
     const admissible = candidates.filter((candidate) => candidate.admissible);
-    const selected = (admissible.length > 0 ? admissible : candidates)
-      .slice()
-      .sort((left, right) => {
-        if (admissible.length === 0) {
-          return left.badEscapeEstimate - right.badEscapeEstimate ||
-            right.successEstimate - left.successEstimate ||
-            left.objective - right.objective;
-        }
-        return left.objective - right.objective;
-      })[0];
+    const rankedCandidates = candidates.slice().sort((left, right) => {
+      if (left.admissible !== right.admissible) return left.admissible ? -1 : 1;
+      if (left.admissible) return compareExecutableCandidates(left, right, constraints);
+      return compareDiagnosticCandidates(left, right);
+    });
+    const selected = rankedCandidates[0];
 
     if (selected === undefined) {
       throw new Error("No visible Codex model matched the configured families.");
@@ -148,12 +145,20 @@ export class AutoRouter {
       profile: this.#config.routing.profile,
       constraints,
       selected,
-      candidates: candidates.sort((left, right) => left.objective - right.objective),
+      candidates: rankedCandidates,
+      capabilityGraph: buildCapabilityGraph(rankedCandidates, features),
       features,
       repo: options.repo,
       quota: options.quota,
       verificationCapabilities,
-      rationale: buildRationale(selected, features, options.quota, this.#config.routing.profile, constraints),
+      rationale: buildRationale(
+        selected,
+        features,
+        options.quota,
+        this.#config.routing.profile,
+        constraints,
+        requiredCompletion(features, this.#config.routing.minimumCompletion),
+      ),
       decidedAt: new Date().toISOString(),
     };
   }
@@ -223,7 +228,7 @@ export class AutoRouter {
       const consideredEfforts = constraints.effort === undefined
         ? baseEfforts
         : supported.includes(constraints.effort) ? [constraints.effort] : [];
-      const speeds = this.#candidateSpeeds(model, constraints.speedId);
+      const speeds = this.#candidateSpeeds(model, constraints);
       for (const effort of consideredEfforts) {
         const topology = effort === "ultra" ? "ultra" : "single";
         if (constraints.topology !== undefined && topology !== constraints.topology) {
@@ -251,12 +256,24 @@ export class AutoRouter {
     return deduplicateCandidates(candidates);
   }
 
-  #candidateSpeeds(model: ModelCatalogEntry, requested?: string): string[] {
+  #candidateSpeeds(model: ModelCatalogEntry, constraints: RouteConstraints): string[] {
     const advertised = new Set(model.serviceTiers.map((tier) => tier.id));
-    if (requested !== undefined) {
-      if (requested === "standard") return ["standard"];
-      return advertised.has(requested) || this.#config.routing.speed.allowUnadvertisedTiers ? [requested] : [];
+    if (constraints.speedMode === "off") return ["standard"];
+    if (constraints.speedMode === "fast") {
+      // Product Fast is an explicit request for a configured, advertised
+      // premium tier. It is never silently substituted with Standard or an
+      // unadvertised service-tier id.
+      return this.#config.routing.speed.candidateTiers.filter((speedId) =>
+        speedId !== "standard" && advertised.has(speedId) && this.#speedProfile(model, speedId).premium
+      );
     }
+    if (constraints.speedId !== undefined) {
+      if (constraints.speedId === "standard") return ["standard"];
+      return advertised.has(constraints.speedId) || this.#config.routing.speed.allowUnadvertisedTiers
+        ? [constraints.speedId]
+        : [];
+    }
+    if (constraints.speedMode === "auto" && !this.#config.routing.speed.enabled) return ["standard"];
     if (!this.#config.routing.speed.enabled) {
       return [closestSupportedSpeed(model, this.#config.routing.speed.defaultTier, this.#config)];
     }
@@ -359,10 +376,16 @@ export class AutoRouter {
     const quotaPenalty = predictedNormalizedCredits * quota.pressure /
       Math.max(1, this.#config.routing.prediction.fallbackCreditsPerCostWeight);
     const switchPenalty = 0;
+    const completionThreshold = requiredCompletion(features, this.#config.routing.minimumCompletion);
     const qualityThreshold = requiredQuality(features, this.#config.routing.minimumQuality);
     const minimumProofTier = requiredProofTier(features, this.#config);
     const quotaUsageAvailable = quota.known && quota.usedPercent !== null && quota.remainingPercent !== null;
 
+    if (successEstimate + 1e-9 < completionThreshold) {
+      rejectionReasons.push(
+        `completion estimate ${round(successEstimate)} is below required ${round(completionThreshold)}`,
+      );
+    }
     if (verifiedReliability + 1e-9 < qualityThreshold) {
       rejectionReasons.push(
         `verified-reliability lower bound ${round(verifiedReliability)} is below required ${round(qualityThreshold)}`,
@@ -423,11 +446,19 @@ export class AutoRouter {
     ) {
       rejectionReasons.push("quota usage is at or above the configured premium-speed threshold");
     }
-    if (
+    if (speedProfile.premium && constraints.speedMode !== undefined && constraints.executionContext !== "foreground") {
+      rejectionReasons.push("premium speed requires an explicit foreground execution context");
+    }
+    if (speedProfile.premium && constraints.speedMode === "auto" && !hasStructuredLatencyDemand(constraints)) {
+      rejectionReasons.push("Auto premium speed requires an explicit structured deadline or urgent latency priority");
+    } else if (
       speedProfile.premium &&
+      constraints.speedMode === undefined &&
       constraints.speedId === undefined &&
       features.latencySensitivity < this.#config.routing.speed.minimumLatencySensitivityForPremium
     ) {
+      // Advanced/raw routing remains backward compatible, but the product
+      // `speedMode: auto` path above never lets prompt wording unlock premium.
       rejectionReasons.push("task latency sensitivity is too low for premium speed");
     }
     if (constraints.deadlineMs !== undefined && predictedP90DurationMs > constraints.deadlineMs) {
@@ -552,9 +583,48 @@ function familyTaskFit(family: ModelFamily, features: TaskFeatures): number {
   }
 }
 
+function compareExecutableCandidates(
+  left: RouteCandidate,
+  right: RouteCandidate,
+  constraints: RouteConstraints,
+): number {
+  if (constraints.latencyPriority === "urgent") {
+    return left.objective - right.objective ||
+      left.predictedNormalizedCredits - right.predictedNormalizedCredits ||
+      right.successEstimate - left.successEstimate ||
+      left.badEscapeEstimate - right.badEscapeEstimate;
+  }
+  return left.predictedNormalizedCredits - right.predictedNormalizedCredits ||
+    right.successEstimate - left.successEstimate ||
+    left.badEscapeEstimate - right.badEscapeEstimate ||
+    left.predictedDurationMs - right.predictedDurationMs ||
+    left.objective - right.objective;
+}
+
+function compareDiagnosticCandidates(left: RouteCandidate, right: RouteCandidate): number {
+  return left.badEscapeEstimate - right.badEscapeEstimate ||
+    right.successEstimate - left.successEstimate ||
+    left.predictedNormalizedCredits - right.predictedNormalizedCredits ||
+    left.objective - right.objective;
+}
+
 function requiredQuality(
   features: TaskFeatures,
   thresholds: CounterlaneConfig["routing"]["minimumQuality"],
+): number {
+  return requiredRiskThreshold(features, thresholds);
+}
+
+function requiredCompletion(
+  features: TaskFeatures,
+  thresholds: CounterlaneConfig["routing"]["minimumCompletion"],
+): number {
+  return requiredRiskThreshold(features, thresholds);
+}
+
+function requiredRiskThreshold(
+  features: TaskFeatures,
+  thresholds: { normal: number; elevated: number; critical: number },
 ): number {
   if (isCritical(features)) {
     return thresholds.critical;
@@ -613,12 +683,14 @@ function buildRationale(
   quota: QuotaState,
   profile: RoutingProfile,
   constraints: RouteConstraints,
+  completionThreshold: number,
 ): string[] {
   const rationale = [
     `profile=${profile}`,
     `task=${features.taskKind}`,
     `selected=${selected.modelFamily}/${selected.effort}/${selected.speedId}/${selected.proofTier}`,
-    `estimated_success=${round(selected.successEstimate)}`,
+    `estimated_completion=${round(selected.successEstimate)}`,
+    `required_completion=${round(completionThreshold)}`,
     `estimated_detection=${round(selected.detectionEstimate)}`,
     `estimated_bad_escape=${round(selected.badEscapeEstimate)}`,
     `predicted_p90_ms=${Math.round(selected.predictedP90DurationMs)}`,
@@ -629,6 +701,8 @@ function buildRationale(
   }
   if (selected.calibrationSamples > 0) {
     rationale.push(`empirical calibration used ${selected.calibrationSamples} matching route observations`);
+  } else {
+    rationale.push("completion estimate is a heuristic prior with no matching calibration samples");
   }
   if (features.verifiability >= 0.6) {
     rationale.push("verification evidence reduced the probability of an incorrect artifact escaping detection");
@@ -681,6 +755,21 @@ function normalizeRouteConstraints(value?: RouteConstraints): RouteConstraints {
     }
     if (value.speedId !== "auto") constraints.speedId = value.speedId.trim();
   }
+  if (value.speedMode !== undefined) {
+    if (value.speedMode !== "off" && value.speedMode !== "auto" && value.speedMode !== "fast") {
+      throw new Error("Route constraint speedMode must be off, auto, or fast.");
+    }
+    if (constraints.speedId !== undefined) {
+      throw new Error("Route constraints cannot combine raw speedId with product speedMode.");
+    }
+    constraints.speedMode = value.speedMode;
+  }
+  if (value.executionContext !== undefined) {
+    if (value.executionContext !== "foreground" && value.executionContext !== "background") {
+      throw new Error("Route constraint executionContext must be foreground or background.");
+    }
+    constraints.executionContext = value.executionContext;
+  }
   if (value.topology !== undefined) {
     if (value.topology !== "single" && value.topology !== "ultra") {
       throw new Error("Route constraint topology must be single or ultra.");
@@ -732,8 +821,12 @@ function applyLatencyPriority(features: TaskFeatures, constraints: RouteConstrai
 
 function hasHardConstraints(constraints: RouteConstraints): boolean {
   return constraints.modelId !== undefined || constraints.modelFamily !== undefined || constraints.effort !== undefined ||
-    constraints.speedId !== undefined || constraints.topology !== undefined || constraints.proofTier !== undefined ||
+    constraints.speedId !== undefined || constraints.speedMode !== undefined || constraints.topology !== undefined || constraints.proofTier !== undefined ||
     constraints.deadlineMs !== undefined || constraints.maxNormalizedCredits !== undefined;
+}
+
+function hasStructuredLatencyDemand(constraints: RouteConstraints): boolean {
+  return constraints.latencyPriority === "urgent" || constraints.deadlineMs !== undefined;
 }
 
 function formatConstraints(constraints: RouteConstraints): string {
@@ -775,9 +868,18 @@ function blend(prior: number, empirical: number, weight: number): number {
 }
 
 function assumedVerificationCapabilities(config: CounterlaneConfig): VerificationCapabilitySummary {
-  const availableTiers = config.verification.routing.enabled
+  const configuredTiers = config.verification.routing.enabled
     ? [...config.verification.routing.candidateTiers]
     : [config.verification.routing.defaultTier];
+  const taskSpecificCommandCountByTier = {
+    basic: configuredTaskSpecificCommands(config, "basic").length,
+    standard: configuredTaskSpecificCommands(config, "standard").length,
+    strong: configuredTaskSpecificCommands(config, "strong").length,
+    adversarial: configuredTaskSpecificCommands(config, "adversarial").length,
+  };
+  const availableTiers = config.verification.requireTaskSpecificCheck
+    ? configuredTiers.filter((tier) => hasConfiguredTaskSpecificCoverage(config, tier))
+    : configuredTiers;
   return {
     availableTiers,
     commandCountByTier: {
@@ -786,8 +888,27 @@ function assumedVerificationCapabilities(config: CounterlaneConfig): Verificatio
       strong: 2,
       adversarial: 2,
     },
+    taskSpecificCommandCountByTier,
+    taskSpecificRequired: config.verification.requireTaskSpecificCheck,
     requiredCountByTier: { ...config.verification.routing.minimumIndependentChecks },
     estimatedCostWeightByTier: { ...config.verification.routing.costWeights },
     fingerprint: "assumed",
   };
+}
+
+function configuredTaskSpecificCommands(config: CounterlaneConfig, tier: ProofTier) {
+  return config.verification.commands.filter((command) =>
+    command.taskSpecific === true && proofTierRank(commandMinimumTier(command)) <= proofTierRank(tier)
+  );
+}
+
+function hasConfiguredTaskSpecificCoverage(config: CounterlaneConfig, tier: ProofTier): boolean {
+  const commands = configuredTaskSpecificCommands(config, tier);
+  if (tier === "adversarial") {
+    return commands.some((command) => commandMinimumTier(command) === "adversarial");
+  }
+  if (tier === "standard" || tier === "strong") {
+    return commands.some((command) => proofTierRank(commandMinimumTier(command)) >= proofTierRank("standard"));
+  }
+  return commands.length > 0;
 }

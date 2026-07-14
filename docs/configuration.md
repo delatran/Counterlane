@@ -129,6 +129,21 @@ Definitions:
 
 The runtime catalog decides whether a tier exists. Profiles decide how Counterlane values it. These multipliers are not billing guarantees. As of the `2026-07-13` documentation snapshot, OpenAI documents [GPT-5.6 availability in Codex](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt) and discusses [Fast mode in the GPT-5.6 Codex context](https://openai.com/index/previewing-gpt-5-6-sol/), but those public descriptions do not replace the per-model runtime catalog. Counterlane therefore still refuses to send any unadvertised Fast tier unless configuration explicitly opts in.
 
+## Product MCP speed mode
+
+The product MCP tool uses a bounded permission instead of a raw service-tier
+string:
+
+~~~text
+off   force Standard
+auto  permit a configured advertised premium tier only when foreground and latency gates pass
+fast  request a configured advertised premium tier or fail closed
+~~~
+
+The host catalog and local configuration remain authoritative. A speed mode
+never upgrades model capability, reasoning effort, topology, verifier strength,
+or approval authority.
+
 
 ## Per-run route controls
 
@@ -152,6 +167,11 @@ The first five are hard constraints. Unsupported combinations return an error ra
   "routing": {
     "profile": "balanced",
     "reservePercent": 20,
+    "minimumCompletion": {
+      "normal": 0.78,
+      "elevated": 0.9,
+      "critical": 0.97
+    },
     "minimumQuality": {
       "normal": 0.78,
       "elevated": 0.9,
@@ -169,7 +189,19 @@ The first five are hard constraints. Unsupported combinations return an error ra
 }
 ```
 
-`economy`, `balanced`, and `quality` change relative penalties, not safety floors. Speed and effort retain separate cost/latency models.
+`minimumCompletion` is an independent first-pass completion gate. A route whose
+completion estimate is below the task's normal, elevated, or critical floor is
+not executable merely because a strong verifier is likely to catch its errors.
+Before matching telemetry exists, this estimate is explicitly a heuristic prior,
+not a calibrated probability. `minimumQuality` separately bounds the estimated
+chance that an incorrect artifact escapes verification.
+
+Among routes that clear completion, verification, catalog, quota, and hard
+request constraints, Auto chooses the lowest predicted normalized token-cost
+proxy. An explicit urgent latency priority may trade cost for latency; a hard
+deadline first rejects routes whose predicted p90 misses it. `economy`,
+`balanced`, and `quality` change the remaining objective penalties, not either
+safety floor. Speed and effort retain separate cost/latency models.
 
 `reservePercent` is a degradation threshold, not an on/off switch. As live quota pressure rises, Counterlane first removes expensive route dimensions such as Twin, premium speed, Max, and Ultra. A safe Standard single route remains eligible. Unknown quota telemetry also permits only this conservative single-lane posture. A known exhausted window (`usedPercent >= 100`, `remainingPercent <= 0`, or `rateLimitReachedType == "rate_limit_reached"`) is a hard abstention condition for all delegated execution.
 
@@ -197,6 +229,15 @@ Rate-limit payloads can expose multiple buckets, but the model catalog currently
 
 Token economics and speed-tier multipliers are composed. Update both when pricing or entitlement behavior changes.
 
+## Utility compatibility
+
+The utility configuration uses detectedVerificationFailurePenalty for an
+observed visible verifier failure. It is not a success credit and cannot make a
+failed arm eligible for selection. Older configuration files may provide
+badEscapePenalty; Counterlane maps that legacy input only when the new key is
+absent and rejects contradictory values. Use the new key in public
+configuration examples.
+
 ## Meta-controller
 
 ```json
@@ -216,7 +257,7 @@ Token economics and speed-tier multipliers are composed. Update both when pricin
 }
 ```
 
-The meta-controller can treat a speed-only change as a treatment. It buys a twin only when expected information value exceeds estimated paired cost and quota permits exploration.
+The meta-controller can treat a speed-only change as a treatment. It buys a twin only when expected information value exceeds estimated paired cost and quota permits exploration. This is a Research surface, not the product execute path. The retained confidenceZ field scales a heuristic posterior band for compatibility; it is not a calibrated confidence claim.
 
 ## Verification
 
@@ -226,14 +267,37 @@ The meta-controller can treat a speed-only change as a treatment. It buys a twin
     "autoDetect": true,
     "requireAtLeastOne": true,
     "failOnNoVerifier": true,
+    "requireTaskSpecificCheck": false,
     "defaultTimeoutMs": 600000,
     "maximumOutputBytes": 1000000,
-    "commands": []
+    "commands": [
+      {
+        "name": "repository-tests",
+        "command": ["npm", "test"],
+        "required": true,
+        "candidateCodePolicy": "executes-candidate-code",
+        "minimumTier": "standard"
+      }
+    ]
   }
 }
 ```
 
 Explicit verifier commands use argv arrays. They are executable code and must be reviewed.
+
+`candidateCodePolicy` is an explicit verifier-authority assertion:
+
+- `executes-candidate-code` is appropriate for repository tests, linters, and wrappers that import or execute candidate files.
+- `data-only` is reserved for a verifier that parses candidate artifacts as untrusted data without importing or executing candidate code.
+
+For product MCP certification, `taskSpecific: true` is necessary but not sufficient. The command must come from host authority, use an absolute external immutable entrypoint, declare `candidateCodePolicy: "data-only"`, and remain outside the candidate repository. Inline `node -e`, shell `-c`, PowerShell command strings, and repository wrappers are non-certifying. Repository-owned checks can still support CLI and Research evidence.
+
+Set `requireTaskSpecificCheck` to `true` when proof must include a check of the
+delegated task contract. At least one command appropriate for the selected tier
+must then declare `taskSpecific: true`; auto-detected and undeclared commands
+remain supporting repository-health evidence only. Every declared task-specific
+check must pass. The declaration is a trusted policy assertion, not evidence
+that an external or hidden oracle ran.
 
 ## Twin execution
 

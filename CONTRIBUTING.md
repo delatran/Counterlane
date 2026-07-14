@@ -39,7 +39,7 @@ Routing or utility changes should report:
 - static and best-fixed baselines;
 - total exploration cost;
 - verified success and bad-escape outcomes;
-- confidence intervals;
+- a preregistered uncertainty method and its eligibility conditions;
 - calibration and held-out behavior;
 - all changed coefficients;
 - matched model/effort Standard-versus-Fast latency and marginal-cost results when speed routing changes.

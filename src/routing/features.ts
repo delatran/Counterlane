@@ -10,6 +10,8 @@ interface SignalGroup {
 const VIETNAMESE_FINANCIAL_RISK = /(?:^|[^\p{L}\p{N}_])(?:thanh toán|hoàn tiền|hóa đơn|hoá đơn|tài chính|ví điện tử|ví tiền|tiền tệ)(?![\p{L}\p{N}_])/iu;
 const VIETNAMESE_MIGRATION_RISK = /(?:^|[^\p{L}\p{N}_])(?:di chuyển dữ liệu|di trú dữ liệu|thay đổi lược đồ|nâng cấp cơ sở dữ liệu|điền bù dữ liệu|xóa bảng|xoá bảng|cắt ngắn bảng|lược đồ)(?![\p{L}\p{N}_])/iu;
 const VIETNAMESE_SECURITY_RISK = /(?:xác thực|phân quyền|uỷ quyền|ủy quyền|vượt quyền|đặc quyền|lỗ hổng|bảo mật|mật mã|mô hình đe dọa)/iu;
+const PRODUCTION_OPERATIONAL_RISK = /\b(?:production\b(?![- ]quality\b)(?!\s+(?:\w+\s+){0,2}(?:code|implementation)\b)|incident|outage|hotfix|data loss|destructive)\b/iu;
+const DESTRUCTIVE_ACTION_WITH_TARGET = /\b(?:delete|erase|purge|wipe|drop|truncate|overwrite)\w*\b(?=[^\r\n]{0,64}\b(?:data|files?|folders?|directories|tables?|records?|repository|repo|workspace|secrets?)\b)/iu;
 
 const GROUPS = {
   mechanical: [
@@ -21,7 +23,7 @@ const GROUPS = {
     { patterns: [VIETNAMESE_SECURITY_RISK], weight: 0.38, label: "security-sensitive domain (Vietnamese)" },
     { patterns: [/\b(payment|billing|checkout|ledger|wallet|money|financial)\w*\b/iu], weight: 0.38, label: "financial domain" },
     { patterns: [VIETNAMESE_FINANCIAL_RISK], weight: 0.38, label: "financial domain (Vietnamese)" },
-    { patterns: [/\b(production|incident|outage|hotfix|data loss|destructive)\b/iu], weight: 0.35, label: "production impact" },
+    { patterns: [PRODUCTION_OPERATIONAL_RISK], weight: 0.35, label: "production impact" },
     { patterns: [/(sản xuất|sự cố|gián đoạn|mất dữ liệu|phá huỷ|phá hủy)/iu], weight: 0.35, label: "production impact (Vietnamese)" },
     { patterns: [/\b(migration|schema change|backfill|drop table|delete data|truncate)\b/iu], weight: 0.34, label: "migration or destructive data change" },
     { patterns: [VIETNAMESE_MIGRATION_RISK], weight: 0.34, label: "migration or destructive data change (Vietnamese)" },
@@ -42,7 +44,11 @@ const GROUPS = {
   ],
   ambiguity: [
     { patterns: [/\b(find (the )?root cause|investigate|figure out|best approach|design|architect|trade-?off|why does)\b/iu], weight: 0.28, label: "open-ended investigation" },
-    { patterns: [/\b(somehow|maybe|not sure|unknown|intermittent|flaky|random)\b/iu], weight: 0.22, label: "uncertain symptom" },
+    {
+      patterns: [/\b(?:somehow|maybe|not sure|intermittent|flaky|random|unknown (?:cause|behavior|behaviour|issue|problem|failure|technology|system))\b/iu],
+      weight: 0.22,
+      label: "uncertain symptom",
+    },
   ],
   breadth: [
     { patterns: [/\b(entire|whole|all packages|monorepo|cross-service|multiple services|repository-wide|end-to-end)\b/iu], weight: 0.38, label: "repository-wide scope" },
@@ -52,18 +58,27 @@ const GROUPS = {
   depth: [
     { patterns: [/\b(concurrency|race condition|deadlock|distributed|consistency|transaction|state machine|compiler|formal proof)\b/iu], weight: 0.42, label: "deep reasoning domain" },
     { patterns: [/\b(edge cases?|invariant|root cause|multi-step|complex)\b/iu], weight: 0.24, label: "multi-step reasoning" },
+    {
+      patterns: [/\b(?:causal|acyclic|topological|dependency graph|event stream|reconcil(?:e|er|iation)|deep clone|prototype safety|safe-integer overflow)\b/iu],
+      weight: 0.32,
+      label: "algorithmic correctness contract",
+    },
   ],
   verifiable: [
     { patterns: [/\b(test(s|ed|ing)?|repro(duction)?|expected output|acceptance criteria|typecheck|lint|benchmark)\b/iu], weight: 0.28, label: "explicit verification" },
     { patterns: [/```|\b(error|exception|stack trace|failing test)\b/iu], weight: 0.18, label: "concrete failure evidence" },
   ],
   parallel: [
-    { patterns: [/\b(independent|in parallel|parallelize|workstreams?|separate packages|audit each)\b/iu], weight: 0.42, label: "explicit parallel workstreams" },
+    {
+      patterns: [/\b(?:in parallel|parallelize|workstreams?|separate packages|audit each|independent (?:tasks?|workstreams?|packages?|services?|modules?))\b/iu],
+      weight: 0.42,
+      label: "explicit parallel workstreams",
+    },
     { patterns: [/\b(frontend|backend|database|ci|docs)\b.*\b(frontend|backend|database|ci|docs)\b/isu], weight: 0.2, label: "multiple separable domains" },
   ],
   latency: [
     { patterns: [/\b(quick|fast|urgent|low latency|faster response)\b/iu], weight: 0.35, label: "latency-sensitive wording" },
-    { patterns: [/\b(immediately|asap|right now|blocking me|while I wait|interactive|real[- ]?time)\b/iu], weight: 0.3, label: "interactive or blocking deadline" },
+    { patterns: [/\b(asap|right now|blocking me|while I wait|interactive|real[- ]?time)\b/iu], weight: 0.3, label: "interactive or blocking deadline" },
     { patterns: [/\b(outage|incident|hotfix|deadline|time[- ]critical|emergency)\b/iu], weight: 0.25, label: "time-critical operational context" },
   ],
 } satisfies Record<string, SignalGroup[]>;
@@ -84,6 +99,10 @@ export function extractTaskFeatures(prompt: string, repo: RepoProfile): TaskFeat
   const codeBlocks = (prompt.match(/```/gu) ?? []).length / 2;
   const questionCount = (prompt.match(/\?/gu) ?? []).length;
   const explicitCriteria = /\b(acceptance criteria|must|should|expected|done when|requirements?)\b/iu.test(prompt);
+  const bulletCount = (prompt.match(/^\s*[-*]\s+/gmu) ?? []).length;
+  const contractSignalCount = (prompt.match(
+    /\b(?:must|never|exact(?:ly)?|reject|throw|validate|validation|deterministic|side-effect-free|invariant|error classes?|output shapes?|before applying)\b/giu,
+  ) ?? []).length;
   const repoScale = clamp(Math.log10(Math.max(10, repo.trackedFileCount)) / 4);
   const packageScale = clamp(repo.packageCount / 12);
   const changedScale = clamp(repo.changedFileCount / 20);
@@ -93,8 +112,18 @@ export function extractTaskFeatures(prompt: string, repo: RepoProfile): TaskFeat
   const mechanicalness = clamp(mechanicalText + Math.min(fileMentions, 3) * 0.08 + (explicitCriteria ? 0.12 : 0) - ambiguityText * 0.3);
   const ambiguity = clamp(0.12 + ambiguityText + questionCount * 0.04 - Math.min(fileMentions, 3) * 0.06 - (explicitCriteria ? 0.12 : 0));
   const breadth = clamp(0.08 + breadthText + repoScale * 0.16 + packageScale * 0.25 + changedScale * 0.12);
-  const depth = clamp(0.12 + depthText + ambiguity * 0.16 + Math.min(codeBlocks, 2) * 0.05);
-  const explicitHighRiskDomain = /\b(migration|security|production|payment|auth)\w*\b/iu.test(prompt) ||
+  const structuredContractDepth = explicitCriteria
+    ? clamp(
+        Math.min(bulletCount, 20) / 20 * 0.22 +
+        Math.min(contractSignalCount, 16) / 16 * 0.22 +
+        Math.min(Math.max(0, lineCount - 30), 90) / 90 * 0.1,
+      )
+    : 0;
+  const depth = clamp(
+    0.12 + depthText + structuredContractDepth + ambiguity * 0.16 + Math.min(codeBlocks, 2) * 0.05,
+  );
+  const explicitHighRiskDomain = /\b(migration|security|payment|auth)\w*\b/iu.test(prompt) ||
+    PRODUCTION_OPERATIONAL_RISK.test(prompt) ||
     VIETNAMESE_SECURITY_RISK.test(prompt) ||
     VIETNAMESE_FINANCIAL_RISK.test(prompt) ||
     VIETNAMESE_MIGRATION_RISK.test(prompt);
@@ -105,7 +134,7 @@ export function extractTaskFeatures(prompt: string, repo: RepoProfile): TaskFeat
   const broadFilesystemDestruction = GROUPS.risk.at(-1)?.patterns.some((pattern) => pattern.test(prompt)) ?? false;
   const destructivePotential = clamp(
     riskText * 0.7 +
-    (/\b(delete|erase|purge|wipe|drop|truncate|overwrite|rotate secrets?|revoke)\b/iu.test(prompt) ||
+    (DESTRUCTIVE_ACTION_WITH_TARGET.test(prompt) || /\b(?:rotate secrets?|revoke)\b/iu.test(prompt) ||
       /(xóa|xoá|thu hồi|cắt ngắn)/iu.test(prompt) ? 0.35 : 0) +
     (broadFilesystemDestruction ? 0.5 : 0),
   );
@@ -122,6 +151,9 @@ export function extractTaskFeatures(prompt: string, repo: RepoProfile): TaskFeat
   }
   if (lineCount > 30) {
     evidence.push("prompt contains extensive context");
+  }
+  if (structuredContractDepth >= 0.24) {
+    evidence.push("prompt contains a dense correctness contract");
   }
 
   return {
@@ -168,7 +200,12 @@ function classifyTaskKind(prompt: string, risk: number, mechanicalness: number):
   if (/\b(refactor|restructure|redesign|rewrite)\b/iu.test(prompt) || /(tái cấu trúc|tổ chức lại|thiết kế lại|viết lại)/iu.test(prompt)) {
     return "refactor";
   }
-  if (/\b(fix|bug|error|failure|crash|broken|regression)\b/iu.test(prompt) || /(sửa lỗi|khắc phục lỗi|lỗi hồi quy|bị hỏng)/iu.test(prompt)) {
+  const explicitBugfix = /\b(fix|bug|failure|crash|broken|regression|failing)\b/iu.test(prompt) ||
+    /(sửa lỗi|khắc phục lỗi|lỗi hồi quy|bị hỏng)/iu.test(prompt);
+  if (/^\s*(?:add|implement|build|create)\b/iu.test(prompt) && !explicitBugfix) {
+    return "feature";
+  }
+  if (explicitBugfix) {
     return "bugfix";
   }
   if (/\b(add|implement|build|create|feature)\b/iu.test(prompt) || /(thêm|triển khai|xây dựng|tạo|tính năng)/iu.test(prompt)) {

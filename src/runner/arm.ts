@@ -7,6 +7,7 @@ import type {
   ArmResult,
   DiffSummary,
   TurnRunResult,
+  VerificationPlan,
   VerificationReport,
 } from "../core/types.js";
 import { errorToJson, SafetyError } from "../core/errors.js";
@@ -16,6 +17,7 @@ import { estimateCost } from "../codex/cost.js";
 import { WorktreeManager, type WorktreeHandle } from "../git/worktree.js";
 import { currentWorkingStateHash } from "../git/snapshot.js";
 import { BlindVerifier } from "../verification/verifier.js";
+import { verifyFrozenPlanIntegrity } from "../verification/plan.js";
 import { calculateUtility } from "./utility.js";
 import { buildControlledPrompt } from "./prompt.js";
 
@@ -29,6 +31,10 @@ export interface ExecuteArmOptions {
   worktrees: WorktreeManager;
   config: CounterlaneConfig;
   logger: Logger;
+  /** Product execution freezes verifier identity before the model turn. */
+  verificationPlan?: VerificationPlan;
+  /** Product journal hook persisted immediately before the App Server send. */
+  beforeTurnStart?: () => Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -57,6 +63,15 @@ export async function executeArm(options: ExecuteArmOptions): Promise<ArmResult>
       topology: options.policy.topology,
       proofTier: options.policy.proofTier,
     });
+    if (options.verificationPlan !== undefined) {
+      const baselineIntegrity = await verifyFrozenPlanIntegrity(options.worktree.path, options.verificationPlan);
+      if (baselineIntegrity.integrity !== "intact") {
+        throw new SafetyError("Frozen verifier assets changed before the model turn; refusing to start a delegated turn.", {
+          integrity: baselineIntegrity.integrity,
+          reasons: baselineIntegrity.reasons,
+        });
+      }
+    }
     turn = await options.appServer.runTurn({
       threadId: options.threadId,
       prompt: buildControlledPrompt(options.prompt),
@@ -74,6 +89,7 @@ export async function executeArm(options: ExecuteArmOptions): Promise<ArmResult>
               networkAccess: options.config.codex.sandbox.networkAccess,
             },
       extraParams: options.config.codex.extraTurnParams,
+      ...(options.beforeTurnStart === undefined ? {} : { beforeTurnStart: options.beforeTurnStart }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
 
@@ -94,7 +110,12 @@ export async function executeArm(options: ExecuteArmOptions): Promise<ArmResult>
       managedStatePrefixes(options.config),
       options.worktree.path,
     );
-    verification = await verifier.verify(options.worktree.path, options.policy.proofTier, options.signal);
+    verification = await verifier.verify(
+      options.worktree.path,
+      options.policy.proofTier,
+      options.signal,
+      options.verificationPlan,
+    );
     await options.worktrees.assertCandidateControlState(options.worktree);
     const postVerificationState = await currentWorkingStateHash(
       options.worktrees.repository,
@@ -210,6 +231,9 @@ function failedVerification(options: ExecuteArmOptions, now: number): Verificati
     proofTier: options.policy.proofTier,
     adequate: false,
     minimumIndependentChecks: options.config.verification.routing.minimumIndependentChecks[options.policy.proofTier],
+    taskSpecificRequired: options.config.verification.requireTaskSpecificCheck,
+    taskSpecificPassed: 0,
+    taskSpecificTotal: 0,
     passed: false,
     score: 0,
     requiredPassed: 0,
@@ -221,6 +245,13 @@ function failedVerification(options: ExecuteArmOptions, now: number): Verificati
     completedAt: new Date(now).toISOString(),
     durationMs: 0,
     verifierHash: sha256(`arm-error:${options.policy.proofTier}`),
+    integrity: "unavailable",
+    containment: {
+      filesystem: "unverified",
+      network: "unverified",
+      environment: "inherited",
+      processLimits: "unverified",
+    },
   };
 }
 

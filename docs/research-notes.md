@@ -115,7 +115,7 @@ All baselines must use the same harness, prompt, environment, verifier, timeout,
 
 Suggested preregistered gates:
 
-- paired utility uplift confidence interval above zero;
+- paired utility uplift meeting a preregistered uncertainty criterion;
 - verified success non-inferior to the strong static baseline;
 - at least 20% lower steady-state credits at matched verified success, or a declared latency-quality Pareto gain;
 - no increase in bad-escape rate on high-risk slices;

@@ -313,7 +313,9 @@ void test("long-task token protocol pins the native route and seals exactly two 
   assert.equal(study.protocol["counterlane"].cli, "dist/cli.js");
   assert.equal(study.tasks[0]?.visibleVerifier.minimumTier, "standard");
   const generatedConfig = harness.buildCounterlaneConfig(study.protocol, study.tasks[0]!);
+  assert.equal(generatedConfig["verification"].requireTaskSpecificCheck, true);
   assert.equal(generatedConfig["verification"].commands[0].minimumTier, "standard");
+  assert.equal(generatedConfig["verification"].commands[0].taskSpecific, true);
   const generatedArgs = harness.buildCounterlaneArgs(study.protocol, study.tasks[0]!, {
     cliPath: "counterlane-cli",
     workspace: "workspace",

@@ -108,12 +108,22 @@ export function revalidateTreatmentPolicy(options: {
       ...options.constraints,
       modelId: options.policy.modelId,
       effort: options.policy.effort,
-      speedId: options.policy.speedId,
+      // Product speedMode is a semantic permission boundary. Reintroducing a
+      // raw speedId here would both violate that boundary and create an
+      // ambiguous constraint pair; the selected route is compared below.
+      ...(options.constraints?.speedMode === undefined ? { speedId: options.policy.speedId } : {}),
       topology: options.policy.topology,
       proofTier: options.policy.proofTier,
     },
   }));
   const selected = decision.selected;
+  if (options.constraints?.speedMode !== undefined && selected.speedId !== options.policy.speedId) {
+    throw new SafetyError("The product speed route changed after preflight; a fresh no-spend preflight is required.", {
+      plannedSpeed: options.policy.speedId,
+      selectedSpeed: selected.speedId,
+      speedMode: options.constraints.speedMode,
+    });
+  }
   return {
     ...options.policy,
     modelId: selected.modelId,

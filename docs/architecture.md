@@ -106,6 +106,18 @@ Premium speed must pass:
 
 `single` represents one main trajectory. `ultra` represents proactive multi-agent breadth and is separately gated by parallelizability, breadth, quota, and configuration.
 
+### Capability graph
+
+VGCL escalation uses a frozen directed graph over `model × effort × topology`.
+Candidate scores, price, latency, speed tier, and proof tier never create an
+edge. Same-model effort edges connect adjacent advertised efforts. Family edges
+are adjacent (`luna -> terra -> sol`) and exist only when prompt/repository
+features cross the declared depth, risk, novelty, or breadth thresholds in
+`src/routing/capability-graph.ts`. A `single -> ultra` edge requires both
+`parallelizability >= 0.62` and `breadth >= 0.48`. The successor selector must
+also retain the speed/service tier and cannot weaken proof. These thresholds are
+bootstrap routing heuristics, not calibrated probabilities.
+
 ### Objective
 
 The bootstrap objective combines:

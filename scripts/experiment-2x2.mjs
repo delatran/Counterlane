@@ -1554,11 +1554,13 @@ export function buildCounterlaneConfig(protocol, task) {
       autoDetect: false,
       requireAtLeastOne: true,
       failOnNoVerifier: true,
+      requireTaskSpecificCheck: true,
       commands: [
         {
           name: "common-visible-verifier",
           command: task.visibleVerifier.argv.map((value) => value === "$NODE" ? process.execPath : value),
           required: true,
+          taskSpecific: true,
           timeoutMs: task.visibleVerifier.timeoutMs,
           minimumTier: task.visibleVerifier.minimumTier,
         },

@@ -145,6 +145,18 @@ async function nextUsedPercent() {
   return next;
 }
 
+async function nextTurnOutcome() {
+  const sequencePath = process.env.MOCK_TURN_OUTCOME_SEQUENCE_FILE;
+  if (!sequencePath) return undefined;
+  const values = JSON.parse(await readFile(sequencePath, "utf8"));
+  if (!Array.isArray(values) || values.length === 0 || values.some((value) => value !== "pass" && value !== "fail")) {
+    throw new Error("MOCK_TURN_OUTCOME_SEQUENCE_FILE must contain a non-empty array of pass or fail values");
+  }
+  const [next, ...remaining] = values;
+  await writeFile(sequencePath, JSON.stringify(remaining), "utf8");
+  return next;
+}
+
 async function delayFromEnvironment(name) {
   const delayMs = Number(process.env[name] ?? "0");
   if (!Number.isFinite(delayMs) || delayMs <= 0) return;
@@ -183,9 +195,12 @@ async function executeTurn(threadId, turnId, thread, params) {
     });
   }
 
-  const shouldFail = (model.includes("luna") && prompt.includes("MOCK_FAIL_LUNA")) ||
+  const forcedOutcome = await nextTurnOutcome();
+  const shouldFail = forcedOutcome === "fail" || (forcedOutcome !== "pass" && (
+    (model.includes("luna") && prompt.includes("MOCK_FAIL_LUNA")) ||
     (model.includes("terra") && prompt.includes("MOCK_FAIL_TERRA")) ||
-    (model.includes("sol") && prompt.includes("MOCK_FAIL_SOL"));
+    (model.includes("sol") && prompt.includes("MOCK_FAIL_SOL"))
+  ));
   const usage = usageFor(model, String(params.effort ?? "medium"));
   if (process.env.MOCK_USAGE_BEFORE_DELAY === "1") {
     notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total: usage, last: usage, modelContextWindow: 256000 } });

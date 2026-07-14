@@ -4,6 +4,10 @@ export type ModelFamily = "luna" | "terra" | "sol" | "unknown";
 export type RoutingProfile = "economy" | "balanced" | "quality";
 export type Topology = "single" | "ultra";
 export type SpeedId = string;
+/** Product-level speed permission. Raw service-tier ids remain catalog details. */
+export type SpeedMode = "off" | "auto" | "fast";
+/** Whether a human is actively waiting; absent context must not unlock Auto premium spend. */
+export type ExecutionContext = "foreground" | "background";
 export type LatencyPriority = "economy" | "balanced" | "urgent";
 export type ArmKind = "control" | "treatment";
 export type ExperimentMode = "static" | "auto" | "twin";
@@ -23,6 +27,10 @@ export interface RouteConstraints {
   effort?: string;
   /** Logical speed id. "standard" maps to serviceTier=null. */
   speedId?: SpeedId;
+  /** Product-level premium-tier permission for `counterlane_execute`. */
+  speedMode?: SpeedMode;
+  /** Explicit execution context used by the product Auto speed gate. */
+  executionContext?: ExecutionContext;
   /** Topology is conceptually separate; Ultra is encoded by the Ultra effort on the wire. */
   topology?: Topology;
   /** Soft urgency intent used when Auto is allowed to choose the speed tier. */
@@ -226,6 +234,8 @@ export interface RouteCalibrationIndex {
 export interface VerificationCapabilitySummary {
   availableTiers: ProofTier[];
   commandCountByTier: Record<ProofTier, number>;
+  taskSpecificCommandCountByTier: Record<ProofTier, number>;
+  taskSpecificRequired: boolean;
   requiredCountByTier: Record<ProofTier, number>;
   estimatedCostWeightByTier: Record<ProofTier, number>;
   fingerprint: string;
@@ -261,17 +271,43 @@ export interface RouteCandidate {
   rejectionReasons: string[];
 }
 
+export interface CapabilityGraphEdge {
+  from: string;
+  to: string;
+  reason: "higher-effort" | "task-applicable-family" | "task-applicable-topology";
+}
+
+/** Explicit route-capability edges; candidate scores are never edges. */
+export interface CapabilityGraph {
+  schemaVersion: 1;
+  nodes: string[];
+  edges: CapabilityGraphEdge[];
+}
+
 export interface RouteDecision {
   profile: RoutingProfile;
   constraints: RouteConstraints;
   selected: RouteCandidate;
   candidates: RouteCandidate[];
+  capabilityGraph: CapabilityGraph;
   features: TaskFeatures;
   repo: RepoProfile;
   quota: QuotaState;
   verificationCapabilities: VerificationCapabilitySummary;
   rationale: string[];
   decidedAt: string;
+}
+
+/** Stable no-prompt execution boundary captured by product preflight. */
+export interface ExecutionEnvelope {
+  schemaVersion: 1;
+  envelopeHash: string;
+  sourceProfileHash: string;
+  catalogFingerprint: string;
+  quotaFingerprint: string;
+  verificationPlanHash: string;
+  routeGraphFingerprint: string;
+  selectedRouteKey: string;
 }
 
 export interface SandboxPolicy {
@@ -293,6 +329,8 @@ export interface TurnRunRequest {
   outputSchema?: JsonObject;
   extraParams?: JsonObject;
   signal?: AbortSignal;
+  /** Durable attempt accounting hook called exactly once immediately before `turn/start`. */
+  beforeTurnStart?: () => Promise<void>;
 }
 
 export interface ModelRerouteEvent {
@@ -335,15 +373,63 @@ export interface VerificationCheck {
   name: string;
   command: string[];
   required: boolean;
+  taskSpecific: boolean;
   minimumTier: ProofTier;
   passed: boolean;
   result: CommandResult;
+}
+
+export type VerifierCodeOwnership =
+  | "host-owned-immutable"
+  | "baseline-frozen"
+  | "candidate-controlled"
+  | "unknown";
+
+export type VerificationIntegrity = "intact" | "compromised" | "unavailable";
+
+export interface VerifierContainmentPosture {
+  filesystem: "isolated-worktree" | "unverified";
+  network: "denied" | "allowlisted" | "unverified";
+  environment: "minimal-allowlist" | "inherited";
+  processLimits: "best-effort" | "unverified";
+}
+
+/** Frozen before product spend; no raw prompt or verifier output is retained here. */
+export interface VerificationPlan {
+  schemaVersion: 1;
+  proofTier: ProofTier;
+  adequate: boolean;
+  certifying: boolean;
+  minimumIndependentChecks: number;
+  taskSpecificRequired: boolean;
+  commands: Array<{
+    name: string;
+    command: string[];
+    required: boolean;
+    taskSpecific: boolean;
+    minimumTier: ProofTier;
+    timeoutMs: number;
+    environment: Record<string, string>;
+    candidateCodePolicy: "data-only" | "executes-candidate-code" | "undeclared";
+    codeOwnership: VerifierCodeOwnership;
+  }>;
+  protectedAssets: Array<{
+    path: string;
+    scope: "candidate-repository" | "host";
+    sha256: string;
+    codeOwnership: VerifierCodeOwnership;
+  }>;
+  containment: VerifierContainmentPosture;
+  planHash: string;
 }
 
 export interface VerificationReport {
   proofTier: ProofTier;
   adequate: boolean;
   minimumIndependentChecks: number;
+  taskSpecificRequired: boolean;
+  taskSpecificPassed: number;
+  taskSpecificTotal: number;
   passed: boolean;
   score: number;
   requiredPassed: number;
@@ -355,6 +441,12 @@ export interface VerificationReport {
   completedAt: string;
   durationMs: number;
   verifierHash: string;
+  /** Present for a pre-turn frozen product verification plan. */
+  planHash?: string;
+  integrity?: VerificationIntegrity;
+  integrityReasons?: string[];
+  containment?: VerifierContainmentPosture;
+  codeOwnership?: VerifierCodeOwnership[];
 }
 
 export interface DiffSummary {
@@ -437,7 +529,23 @@ export interface WinnerDecision {
   treatmentUtility: number;
   utilityDelta: number;
   verifiedSuccessDelta: number;
-  confidence: number;
+  /** A visible-verifier partial score is diagnostic only and never application-eligible. */
+  partialLeader?: ArmKind;
+  /** Metric leaders remain separate when verified routes trade cost for latency. */
+  costLeader: ArmKind | "tie" | "unavailable";
+  latencyLeader: ArmKind | "tie" | "unavailable";
+  costComparison: "normalized-token-cost-proxy" | "incomparable";
+  decisionStrength:
+    | "single-verified-completion"
+    | "normalized-token-cost-proxy"
+    | "latency-after-cost-equivalence"
+    | "verified-completion-equivalence"
+    | "incomparable-verified-outcomes"
+    | "non-applicable-partial-verification"
+    | "no-verified-completion";
+  /** Deprecated compatibility field. Counterlane does not produce a calibrated confidence value. */
+  confidence: null;
+  confidenceStatus: "not-produced";
 }
 
 export interface ExperimentResult {
@@ -474,6 +582,21 @@ export interface SingleRunResult {
   startedAt: string;
   completedAt: string;
   durationMs: number;
+  timing: {
+    /** No phase is double-counted; parallel discovery is measured as one wall-clock span. */
+    isolationAndMaterializationMs: number;
+    discoveryMs: number;
+    routingAndPolicyMs: number;
+    delegationSetupMs: number;
+    modelMs: number;
+    verifierMs: number;
+    attemptLocalOverheadMs: number;
+    cleanupAndReconciliationMs: number;
+  };
+  accountingBoundary: {
+    scope: "root-pre-turn" | "nested-mcp";
+    parentOrCallerUsage: "not-applicable" | "unknown-and-excluded";
+  };
   /** Non-fatal persistence or cleanup failures that occurred after a durable apply result existed. */
   bookkeepingWarnings?: string[];
 }

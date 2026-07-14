@@ -520,6 +520,7 @@ export class CodexAppServer {
       // the pending response could orphan a turn. Caller cancellation is
       // translated into turn/interrupt as soon as either turn/started or the
       // turn/start response reveals the turn id.
+      await request.beforeTurnStart?.();
       const response = await this.#rpc.request(
         "turn/start",
         params,

@@ -15,15 +15,22 @@ export const MANIFEST_ROOT_FILES = Object.freeze([
   ".mcp.json",
   ".npmrc",
   "AGENTS.md",
+  "BUILD_WEEK.md",
+  "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
   "counterlane.config.example.json",
+  "DEMO.md",
+  "DEPENDENCY_INVENTORY.md",
+  "JUDGE_FIXTURE_MANIFEST.json",
   "LICENSE",
   "NOTICE",
   "package-lock.json",
   "package.json",
   "README.md",
+  "RELEASE_STATUS.json",
   "SECURITY.md",
+  "SUBMISSION.md",
   "tsconfig.build.json",
   "tsconfig.json",
   "tsconfig.test.json",
@@ -36,7 +43,7 @@ export const MANIFEST_DIRECTORIES = Object.freeze([
   "deploy",
   "dist",
   "docs",
-  "experiments",
+  "experiments/work-codex-2x2",
   "scripts",
   "skills",
   "src",
@@ -121,6 +128,10 @@ async function collectFiles(root, directory, output) {
   entries.sort((left, right) => compareText(left.name, right.name));
   for (const entry of entries) {
     const path = join(directory, entry.name);
+    const portablePath = relative(root, path).split(sep).join("/");
+    // Live smoke evidence is produced only after the final source manifest is
+    // frozen, so it can bind to that manifest without a hash cycle.
+    if (portablePath === "docs/evidence" || portablePath.startsWith("docs/evidence/")) continue;
     if (entry.isSymbolicLink()) {
       throw new Error(`Source manifest refuses symbolic links: ${relative(root, path)}`);
     }

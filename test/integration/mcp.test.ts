@@ -46,6 +46,26 @@ void test("Counterlane MCP exposes direct routing tools and live speed capabilit
     assert.ok(names.includes("counterlane_route"));
     assert.ok(names.includes("counterlane_execute"));
     assert.ok(names.includes("counterlane_compare"));
+    const executeDefinition = tools.find((tool) => tool["name"] === "counterlane_execute");
+    assert.ok(executeDefinition);
+    const executeInputSchema = executeDefinition?.["inputSchema"] as Record<string, unknown>;
+    const executeInputProperties = executeInputSchema["properties"] as Record<string, unknown>;
+    assert.deepEqual((executeInputProperties["speedMode"] as Record<string, unknown>)["enum"], ["off", "auto", "fast"]);
+    assert.equal(executeInputProperties["speed"], undefined, "product execution must not expose raw service-tier ids");
+    const executeOutputSchema = executeDefinition?.["outputSchema"] as Record<string, unknown>;
+    const executeOutputProperties = executeOutputSchema["properties"] as Record<string, unknown>;
+    assert.deepEqual((executeOutputProperties["state"] as Record<string, unknown>)["enum"], [
+      "ready",
+      "configuration_required",
+      "abstain",
+      "attempted",
+      "verified",
+      "failed",
+      "cancelled",
+      "reconciliation_required",
+    ]);
+    assert.ok((executeOutputSchema["required"] as string[]).includes("modelTurnStarted"));
+    assert.ok((executeOutputSchema["required"] as string[]).includes("modelTurnStartState"));
 
     send(child, {
       jsonrpc: "2.0",

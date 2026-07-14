@@ -1,8 +1,17 @@
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { CounterlaneConfig } from "../config/types.js";
 import { managedStatePrefixes } from "../config/managed-state.js";
 import type { Logger } from "../core/logger.js";
-import type { ArmPolicy, RouteConstraints, SingleRunResult, VerificationReport } from "../core/types.js";
+import type {
+  ArmPolicy,
+  ExecutionEnvelope,
+  RouteConstraints,
+  RouteDecision,
+  SingleRunResult,
+  VerificationPlan,
+  VerificationReport,
+} from "../core/types.js";
 import { newId, sha256, writeJsonAtomic, writeUtf8Atomic } from "../core/utils.js";
 import { errorMessage, MetaPlanInvalidatedError, SafetyError } from "../core/errors.js";
 import { createLinkedAbortScope, throwIfAborted } from "../core/abort.js";
@@ -22,6 +31,7 @@ import { metaEvidenceHash, parsePairedObservations } from "../meta/evidence.js";
 import { ensureContainedDirectory, resolveContainedPath } from "../core/path-safety.js";
 import { validateThreadProvenance } from "../core/thread-provenance.js";
 import { normalizeUserPrompt } from "./prompt.js";
+import { assertExecutionEnvelopeCurrent } from "./envelope.js";
 
 export class SingleRunner {
   readonly #repository: GitRepository;
@@ -47,6 +57,10 @@ export class SingleRunner {
     signal?: AbortSignal;
     expectedRepositoryProfileHash?: string;
     expectedMetaEvidenceHash?: string;
+    verificationPlan?: VerificationPlan;
+    expectedExecutionEnvelope?: ExecutionEnvelope;
+    frozenRouteDecision?: RouteDecision;
+    beforeTurnStart?: () => Promise<void>;
   }): Promise<SingleRunResult> {
     validateThreadProvenance({
       ...(options.parentThreadId === undefined ? {} : { parentThreadId: options.parentThreadId }),
@@ -55,6 +69,7 @@ export class SingleRunner {
     const prompt = normalizeUserPrompt(options.prompt);
     const runId = newId("run");
     const startedAtMs = Date.now();
+    const startedAtClock = performance.now();
     const executionScope = createLinkedAbortScope({
       ...(options.signal === undefined ? {} : { parent: options.signal }),
       ...(options.constraints?.deadlineMs === undefined ? {} : {
@@ -67,11 +82,21 @@ export class SingleRunner {
     let appServer: CodexAppServer | null = null;
     let threadId: string | null = null;
     let succeeded = false;
-    let applicationCommitted = false;
     let returnedResult: SingleRunResult | undefined;
+    const timing = {
+      isolationAndMaterializationMs: 0,
+      discoveryMs: 0,
+      routingAndPolicyMs: 0,
+      delegationSetupMs: 0,
+      modelMs: 0,
+      verifierMs: 0,
+      attemptLocalOverheadMs: 0,
+      cleanupAndReconciliationMs: 0,
+    };
 
     try {
       throwIfAborted(executionScope.signal);
+      const isolationStartedAtClock = performance.now();
       const dataDirectory = await ensureContainedDirectory(
         this.#repository.root,
         resolveContainedPath(this.#repository.root, this.#config.dataDirectory, {
@@ -91,7 +116,9 @@ export class SingleRunner {
       }
       throwIfAborted(executionScope.signal);
       const worktree = await worktrees.create(newId("blind"), snapshot);
+      timing.isolationAndMaterializationMs = elapsedMs(isolationStartedAtClock);
       throwIfAborted(executionScope.signal);
+      const discoveryStartedAtClock = performance.now();
       appServer = await CodexAppServer.connect({
         config: this.#config,
         cwd: this.#repository.root,
@@ -105,7 +132,9 @@ export class SingleRunner {
         this.#telemetry.readLearningEvents(),
         inspectVerificationCapabilities(worktree.path, this.#config),
       ]);
+      timing.discoveryMs = elapsedMs(discoveryStartedAtClock);
       throwIfAborted(executionScope.signal);
+      const routingStartedAtClock = performance.now();
       const calibration = buildCalibrationIndex(events);
       if (options.expectedMetaEvidenceHash !== undefined) {
         const actualEvidenceHash = metaEvidenceHash(parsePairedObservations(events), calibration);
@@ -116,9 +145,33 @@ export class SingleRunner {
           });
         }
       }
-      const router = new AutoRouter(this.#config);
-      const staticRoute = router.staticPolicy(catalog, verificationCapabilities);
       const quota = deriveQuotaState(rateLimits, this.#config.routing.reservePercent);
+      const router = new AutoRouter(this.#config);
+      if (options.expectedExecutionEnvelope !== undefined) {
+        if (options.frozenRouteDecision === undefined || options.verificationPlan === undefined) {
+          throw new SafetyError("A frozen execution envelope requires both the frozen route decision and verifier plan.");
+        }
+        const frozenCurrentDecision = router.decide({
+          prompt,
+          repo: profile,
+          catalog,
+          quota,
+          verificationCapabilities,
+          // Product execution keeps learning disabled; this must match its
+          // no-spend preflight rather than inherited historical telemetry.
+          calibration: buildCalibrationIndex([]),
+          constraints: options.frozenRouteDecision.constraints,
+        });
+        assertExecutionEnvelopeCurrent({
+          expected: options.expectedExecutionEnvelope,
+          repo: profile,
+          catalog,
+          quota,
+          decision: frozenCurrentDecision,
+          verificationPlan: options.verificationPlan,
+        });
+      }
+      const staticRoute = router.staticPolicy(catalog, verificationCapabilities);
       const configuredControlPolicy: ArmPolicy = {
         kind: "control",
         name: "static-no-auto",
@@ -177,9 +230,11 @@ export class SingleRunner {
             quota,
             repo: profile,
             verificationCapabilities,
-            calibration,
+              calibration,
           }));
+      timing.routingAndPolicyMs = elapsedMs(routingStartedAtClock);
 
+      const delegationStartedAtClock = performance.now();
       if (options.parentThreadId !== undefined) {
         await appServer.resumeThread(options.parentThreadId);
         throwIfAborted(executionScope.signal);
@@ -197,6 +252,7 @@ export class SingleRunner {
           serviceTier: policy.serviceTier,
         });
       }
+      timing.delegationSetupMs = elapsedMs(delegationStartedAtClock);
       throwIfAborted(executionScope.signal);
       const arm = await executeArm({
         experimentId: runId,
@@ -208,8 +264,13 @@ export class SingleRunner {
         worktrees,
         config: this.#config,
         logger: this.#logger,
+        ...(options.verificationPlan === undefined ? {} : { verificationPlan: options.verificationPlan }),
+        ...(options.beforeTurnStart === undefined ? {} : { beforeTurnStart: options.beforeTurnStart }),
         signal: executionScope.signal,
       });
+      timing.modelMs = arm.turn.durationMs;
+      timing.verifierMs = arm.verification.durationMs;
+      timing.attemptLocalOverheadMs = Math.max(0, arm.durationMs - timing.modelMs - timing.verifierMs);
       await worktrees.assertExperimentControlState([worktree]);
       const currentHash = await currentWorkingStateHash(this.#repository, managedPrefixes);
       const originalStateUnchanged = currentHash === snapshot.manifest.workingStateHash;
@@ -239,6 +300,11 @@ export class SingleRunner {
         startedAt: new Date(startedAtMs).toISOString(),
         completedAt: new Date(completedAtMs).toISOString(),
         durationMs: completedAtMs - startedAtMs,
+        timing,
+        accountingBoundary: {
+          scope: options.parentThreadId === undefined ? "root-pre-turn" : "nested-mcp",
+          parentOrCallerUsage: options.parentThreadId === undefined ? "not-applicable" : "unknown-and-excluded",
+        },
       };
       // Persist a truthful non-applied result before crossing the original
       // checkout mutation boundary. If the durable applied result cannot be
@@ -301,7 +367,6 @@ export class SingleRunner {
             artifactError: errorMessage(artifactError),
           });
         }
-        applicationCommitted = true;
         succeeded = true;
       }
 
@@ -361,6 +426,7 @@ export class SingleRunner {
       }
       return result;
     } finally {
+      const cleanupStartedAtClock = performance.now();
       executionScope.dispose();
       const cleanupErrors: unknown[] = [];
       if (appServer !== null) {
@@ -370,23 +436,31 @@ export class SingleRunner {
         await appServer.close().catch((error: unknown) => cleanupErrors.push(error));
       }
       await worktrees.cleanup(succeeded).catch((error: unknown) => cleanupErrors.push(error));
-      if (cleanupErrors.length > 0) {
-        if (applicationCommitted && returnedResult !== undefined) {
+      timing.cleanupAndReconciliationMs = elapsedMs(cleanupStartedAtClock);
+      if (returnedResult !== undefined) {
+        returnedResult.completedAt = new Date().toISOString();
+        returnedResult.durationMs = elapsedMs(startedAtClock);
+        if (cleanupErrors.length > 0) {
           for (const error of cleanupErrors) {
-            addSingleBookkeepingWarning(returnedResult, this.#logger, "Post-commit resource cleanup failed; the applied result remains authoritative.", error);
+            addSingleBookkeepingWarning(returnedResult, this.#logger, "Post-run resource cleanup failed; the durable result remains authoritative.", error);
           }
-          await writeJsonAtomic(
-            join(returnedResult.artifactDirectory, "result.json"),
-            returnedResult as unknown as object,
-          ).catch((error: unknown) => {
-            addSingleBookkeepingWarning(
-              returnedResult as SingleRunResult,
-              this.#logger,
-              "The run artifact could not be updated with post-commit cleanup warnings.",
-              error,
-            );
-          });
-        } else if (cleanupErrors.length === 1) {
+        }
+        await writeJsonAtomic(
+          join(returnedResult.artifactDirectory, "result.json"),
+          returnedResult as unknown as object,
+        ).catch((error: unknown) => {
+          addSingleBookkeepingWarning(
+            returnedResult as SingleRunResult,
+            this.#logger,
+            "The run artifact could not be updated with final timing or cleanup warnings.",
+            error,
+          );
+        });
+      } else if (cleanupErrors.length > 0) {
+        // A non-applying run has already persisted a durable artifact too.  Do
+        // not turn a successful, isolated MCP result into an error merely
+        // because best-effort resource disposal failed afterwards.
+        if (cleanupErrors.length === 1) {
           throw cleanupErrors[0];
         } else {
           throw new AggregateError(cleanupErrors, "Multiple SingleRunner cleanup operations failed.");
@@ -394,6 +468,10 @@ export class SingleRunner {
       }
     }
   }
+}
+
+function elapsedMs(startedAtClock: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAtClock));
 }
 
 function addSingleBookkeepingWarning(

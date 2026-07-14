@@ -82,6 +82,11 @@
     "enableUltra": false,
     "maxUsagePercentForMax": 45,
     "maxUsagePercentForUltra": 30,
+    "minimumCompletion": {
+      "normal": 0.78,
+      "elevated": 0.9,
+      "critical": 0.97
+    },
     "minimumQuality": {
       "normal": 0.78,
       "elevated": 0.9,
@@ -138,9 +143,21 @@
     "autoDetect": true,
     "requireAtLeastOne": true,
     "failOnNoVerifier": true,
+    "requireTaskSpecificCheck": false,
     "defaultTimeoutMs": 600000,
     "maximumOutputBytes": 1000000,
-    "commands": []
+    "commands": [
+      {
+        "name": "repository-tests",
+        "command": [
+          "npm",
+          "test"
+        ],
+        "required": true,
+        "candidateCodePolicy": "executes-candidate-code",
+        "minimumTier": "standard"
+      }
+    ]
   },
   "telemetry": {
     "enabled": true,
@@ -156,7 +173,7 @@
     "normalizedCreditPenalty": 1,
     "latencyPenaltyPerMinute": 0.2,
     "failedTurnPenalty": 35,
-    "badEscapePenalty": 200,
+    "detectedVerificationFailurePenalty": 200,
     "practicalEquivalenceMargin": 0.05
   }
 }

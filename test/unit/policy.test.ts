@@ -41,6 +41,8 @@ void test("planned treatment routes are rejected when live quota invalidates pre
     verificationCapabilities: {
       availableTiers: ["basic", "standard", "strong", "adversarial"],
       commandCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 3 },
+      taskSpecificCommandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+      taskSpecificRequired: false,
       requiredCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 3 },
       estimatedCostWeightByTier: { basic: 0.2, standard: 0.55, strong: 1, adversarial: 1.8 },
       fingerprint: "live",
@@ -83,6 +85,8 @@ void test("planned controls fail closed when their live proof tier disappears", 
     verificationCapabilities: {
       availableTiers: [],
       commandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+      taskSpecificCommandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+      taskSpecificRequired: false,
       requiredCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 3 },
       estimatedCostWeightByTier: { basic: 0.2, standard: 0.55, strong: 1, adversarial: 1.8 },
       fingerprint: "missing",
@@ -212,6 +216,8 @@ function liveVerificationCapabilities(): VerificationCapabilitySummary {
   return {
     availableTiers: ["basic", "standard", "strong", "adversarial"],
     commandCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 3 },
+    taskSpecificCommandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+    taskSpecificRequired: false,
     requiredCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 3 },
     estimatedCostWeightByTier: { basic: 0.2, standard: 0.55, strong: 1, adversarial: 1.8 },
     fingerprint: "live",

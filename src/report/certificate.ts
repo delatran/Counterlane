@@ -52,7 +52,7 @@ function renderCertificate(result: Omit<ExperimentResult, "certificatePath">): s
     ["Input tokens", tokenValue(result.control, "inputTokens"), tokenValue(result.treatment, "inputTokens")],
     ["Cached input tokens", tokenValue(result.control, "cachedInputTokens"), tokenValue(result.treatment, "cachedInputTokens")],
     ["Output tokens", tokenValue(result.control, "outputTokens"), tokenValue(result.treatment, "outputTokens")],
-    ["Utility", result.control.utility.toFixed(3), result.treatment.utility.toFixed(3)],
+    ["Diagnostic utility (not the selection basis)", result.control.utility.toFixed(3), result.treatment.utility.toFixed(3)],
     ["Files changed", String(result.control.diffSummary.filesChanged), String(result.treatment.diffSummary.filesChanged)],
     ["Duration", formatDuration(result.control.durationMs), formatDuration(result.treatment.durationMs)],
     ["Backend reroutes", String(result.control.turn.reroutes.length), String(result.treatment.turn.reroutes.length)],
@@ -65,6 +65,11 @@ function renderCertificate(result: Omit<ExperimentResult, "certificatePath">): s
     `- Repository snapshot: \`${result.snapshot.workingStateHash}\`\n` +
     `- Winner: **${result.winner.winner}**\n` +
     `- Decision: ${escapeInline(result.winner.reason)}\n` +
+    `- Decision strength: ${result.winner.decisionStrength}\n` +
+    `- Cost leader: ${result.winner.costLeader} (${result.winner.costComparison})\n` +
+    `- Latency leader: ${result.winner.latencyLeader}\n` +
+    `- Partial leader: ${result.winner.partialLeader ?? "none"} (non-applicable)\n` +
+    `- Confidence: ${result.winner.confidenceStatus}; no calibrated confidence value is produced\n` +
     `- Original working state unchanged: ${yesNo(result.originalStateUnchanged)}\n` +
     `- Winner applied: ${yesNo(result.appliedWinner)}\n` +
     `- Post-apply verification: ${result.postApplyVerification === undefined ? "not run" : yesNo(result.postApplyVerification.passed)}\n\n` +

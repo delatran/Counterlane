@@ -97,11 +97,11 @@ export class MetaController {
       ? posterior.sampleCount >= this.#config.meta.minimumExactSamples
       : posterior.sampleCount >= this.#config.meta.minimumFallbackSamples;
     if (enoughEvidence && posterior.lowerBound > this.#config.meta.upliftMargin) {
-      reasons.push("the lower confidence bound clears the configured Auto uplift margin");
+      reasons.push("the lower heuristic posterior band clears the configured Auto uplift margin");
       return decision("auto", options.context, posterior, expectedInformationValue, estimatedTwinCost, false, reasons);
     }
     if (enoughEvidence && posterior.upperBound < -this.#config.meta.upliftMargin) {
-      reasons.push("the upper confidence bound shows the incumbent static policy is superior");
+      reasons.push("the upper heuristic posterior band favors the incumbent static policy");
       return decision("static", options.context, posterior, expectedInformationValue, estimatedTwinCost, false, reasons);
     }
 

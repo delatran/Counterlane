@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "test/fixtures/mock-app-server.mjs": "ec6d8e69d83ebe56034d972bcc94644e416f13395c9e995cbe9d0903731a080f"
+  }
+}

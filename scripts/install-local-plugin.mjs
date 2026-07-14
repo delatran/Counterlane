@@ -4,6 +4,7 @@ import { cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, symlink, wri
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isPublicPackagePathOrAncestor } from "./public-artifacts.mjs";
 import { checkSourceManifest } from "./source-manifest.mjs";
 
 const SCRIPT_PATH = resolve(fileURLToPath(import.meta.url));
@@ -65,7 +66,10 @@ async function assertBuilt() {
       throw new Error(`${path} is missing. Run \`npm run build\` and \`npm run plugin:validate\` before installation.`);
     }
   }
-  await checkSourceManifest({ root: PROJECT_ROOT, quiet: true });
+  const sourceDirectory = await statOrNull(join(PROJECT_ROOT, "src"));
+  if (sourceDirectory?.isDirectory() === true) {
+    await checkSourceManifest({ root: PROJECT_ROOT, quiet: true });
+  }
 }
 
 async function inspectPluginTarget(context) {
@@ -340,29 +344,7 @@ function parseArgs(argv) {
 function isExcluded(rel) {
   if (rel === "") return false;
   const normalized = rel.replaceAll("\\", "/");
-  const root = normalized.split("/")[0];
-  const publicRoots = new Set([
-    "package.json",
-    "dist",
-    "src",
-    "docs",
-    "experiments",
-    "skills",
-    ".agents",
-    ".codex-plugin",
-    ".mcp.json",
-    "deploy",
-    "scripts",
-    "LICENSE",
-    "NOTICE",
-    "README.md",
-    "SOURCE_MANIFEST.sha256",
-    "counterlane.config.example.json",
-    "SECURITY.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
-  ]);
-  if (!publicRoots.has(root)) return true;
+  if (!isPublicPackagePathOrAncestor(normalized)) return true;
   return normalized.split("/").some((segment) =>
     segment === ".env" ||
     segment.startsWith(".env.") ||

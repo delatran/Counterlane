@@ -1,6 +1,5 @@
-import type { ArmResult, CostEstimate, TurnRunResult, VerificationReport } from "../core/types.js";
+import type { ArmKind, ArmResult, CostEstimate, TurnRunResult, VerificationReport, WinnerDecision } from "../core/types.js";
 import type { CounterlaneConfig } from "../config/types.js";
-import { clamp } from "../core/utils.js";
 
 export function calculateUtility(options: {
   turn: TurnRunResult;
@@ -10,8 +9,8 @@ export function calculateUtility(options: {
   forcedFailure?: boolean;
 }): number {
   const successfulTurn = options.turn.status === "completed" && options.forcedFailure !== true;
-  const verifiedSuccess = successfulTurn && options.verification.passed;
-  const badEscape = successfulTurn && !options.verification.passed;
+  const verifiedSuccess = successfulTurn && options.verification.passed && options.verification.adequate;
+  const detectedVerificationFailure = successfulTurn && !options.verification.passed;
   const latencyMinutes = (options.turn.durationMs + options.verification.durationMs) / 60_000;
 
   return (
@@ -20,7 +19,7 @@ export function calculateUtility(options: {
     options.cost.normalizedCredits * options.config.utility.normalizedCreditPenalty -
     latencyMinutes * options.config.utility.latencyPenaltyPerMinute -
     (successfulTurn ? 0 : options.config.utility.failedTurnPenalty) -
-    (badEscape ? options.config.utility.badEscapePenalty : 0)
+    (detectedVerificationFailure ? options.config.utility.detectedVerificationFailurePenalty : 0)
   );
 }
 
@@ -28,85 +27,108 @@ export function selectWinner(
   control: ArmResult,
   treatment: ArmResult,
   practicalEquivalenceMargin = 0.05,
-): {
-  winner: "control" | "treatment" | "tie" | "none";
-  reason: string;
-  controlUtility: number;
-  treatmentUtility: number;
-  utilityDelta: number;
-  verifiedSuccessDelta: number;
-  confidence: number;
-} {
+): WinnerDecision {
   const utilityDelta = treatment.utility - control.utility;
-  const verifiedSuccessDelta = Number(treatment.successful) - Number(control.successful);
-
-  if (control.successful && !treatment.successful) {
-    return {
-      winner: "control",
-      reason: "Only the control arm reached verified completion.",
-      controlUtility: control.utility,
-      treatmentUtility: treatment.utility,
-      utilityDelta,
-      verifiedSuccessDelta,
-      confidence: 0.98,
-    };
-  }
-  if (treatment.successful && !control.successful) {
-    return {
-      winner: "treatment",
-      reason: "Only the treatment arm reached verified completion.",
-      controlUtility: control.utility,
-      treatmentUtility: treatment.utility,
-      utilityDelta,
-      verifiedSuccessDelta,
-      confidence: 0.98,
-    };
-  }
-  if (!control.successful && !treatment.successful) {
-    const scoreDelta = treatment.verification.score - control.verification.score;
-    if (Math.abs(scoreDelta) < 0.05) {
-      return {
-        winner: "none",
-        reason: "Neither arm reached verified completion.",
-        controlUtility: control.utility,
-        treatmentUtility: treatment.utility,
-        utilityDelta,
-        verifiedSuccessDelta,
-        confidence: 0.4,
-      };
-    }
-    const winner = scoreDelta > 0 ? "treatment" : "control";
-    return {
-      winner,
-      reason: `Neither arm passed all required checks; ${winner} had the stronger partial verification score.`,
-      controlUtility: control.utility,
-      treatmentUtility: treatment.utility,
-      utilityDelta,
-      verifiedSuccessDelta,
-      confidence: clamp(0.45 + Math.abs(scoreDelta) * 0.4),
-    };
-  }
-
-  if (Math.abs(utilityDelta) < practicalEquivalenceMargin) {
-    return {
-      winner: "tie",
-      reason: "Both arms reached verified completion with materially equivalent utility.",
-      controlUtility: control.utility,
-      treatmentUtility: treatment.utility,
-      utilityDelta,
-      verifiedSuccessDelta,
-      confidence: 0.7,
-    };
-  }
-
-  const winner = utilityDelta > 0 ? "treatment" : "control";
-  return {
-    winner,
-    reason: `Both arms reached verified completion; ${winner} had higher verified utility after cost and latency penalties.`,
+  const controlVerified = isVerifiedCompletion(control);
+  const treatmentVerified = isVerifiedCompletion(treatment);
+  const verifiedSuccessDelta = Number(treatmentVerified) - Number(controlVerified);
+  const latencyLeader = compareMetric(control.durationMs, treatment.durationMs, 0);
+  const costComparison: WinnerDecision["costComparison"] = control.cost.source === "token_usage" && treatment.cost.source === "token_usage"
+    ? "normalized-token-cost-proxy"
+    : "incomparable";
+  const costLeader: WinnerDecision["costLeader"] = costComparison === "normalized-token-cost-proxy"
+    ? compareMetric(control.cost.normalizedCredits, treatment.cost.normalizedCredits, practicalEquivalenceMargin)
+    : "unavailable";
+  const base = {
     controlUtility: control.utility,
     treatmentUtility: treatment.utility,
     utilityDelta,
     verifiedSuccessDelta,
-    confidence: clamp(0.72 + Math.min(0.25, Math.abs(utilityDelta) / 50)),
+    costLeader,
+    latencyLeader,
+    costComparison,
+    confidence: null,
+    confidenceStatus: "not-produced" as const,
   };
+
+  if (controlVerified && !treatmentVerified) {
+    return {
+      winner: "control",
+      reason: "Only the control arm reached verified completion.",
+      decisionStrength: "single-verified-completion",
+      ...base,
+    };
+  }
+  if (treatmentVerified && !controlVerified) {
+    return {
+      winner: "treatment",
+      reason: "Only the treatment arm reached verified completion.",
+      decisionStrength: "single-verified-completion",
+      ...base,
+    };
+  }
+  if (!controlVerified && !treatmentVerified) {
+    const scoreDelta = treatment.verification.score - control.verification.score;
+    if (scoreDelta === 0) {
+      return {
+        winner: "none",
+        reason: "Neither arm reached verified completion.",
+        decisionStrength: "no-verified-completion",
+        ...base,
+      };
+    }
+    const partialLeader = scoreDelta > 0 ? "treatment" : "control";
+    return {
+      winner: "none",
+      partialLeader,
+      reason: `Neither arm reached verified completion; ${partialLeader} has a diagnostic partial verification lead that is non-applicable.`,
+      decisionStrength: "non-applicable-partial-verification",
+      ...base,
+    };
+  }
+
+  if (costComparison === "incomparable") {
+    return {
+      winner: "none",
+      reason: "Both arms reached verified completion, but normalized token-cost proxy comparison is unavailable because at least one cost is a duration fallback.",
+      decisionStrength: "incomparable-verified-outcomes",
+      ...base,
+    };
+  }
+
+  if (costLeader === "control" || costLeader === "treatment") {
+    return {
+      winner: costLeader,
+      reason: `Both arms reached verified completion; ${costLeader} has the lower normalized token-cost proxy. Latency remains a separate recorded metric.`,
+      decisionStrength: "normalized-token-cost-proxy",
+      ...base,
+    };
+  }
+  if (latencyLeader === "control" || latencyLeader === "treatment") {
+    return {
+      winner: latencyLeader,
+      reason: `Both arms reached verified completion with equivalent normalized token-cost proxy; ${latencyLeader} has the lower observed end-to-end duration.`,
+      decisionStrength: "latency-after-cost-equivalence",
+      ...base,
+    };
+  }
+  return {
+    winner: "tie",
+    reason: "Both arms reached verified completion with equivalent normalized token-cost proxy and observed duration.",
+    decisionStrength: "verified-completion-equivalence",
+    ...base,
+  };
+}
+
+function isVerifiedCompletion(arm: ArmResult): boolean {
+  return arm.successful &&
+    arm.outcome === "success" &&
+    arm.turn.status === "completed" &&
+    arm.verification.passed &&
+    arm.verification.adequate;
+}
+
+function compareMetric(control: number, treatment: number, equivalenceMargin: number): ArmKind | "tie" {
+  if (Math.abs(control - treatment) <= equivalenceMargin) return "tie";
+  return control < treatment ? "control" : "treatment";
 }

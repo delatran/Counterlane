@@ -9,8 +9,9 @@ import {
   callCounterlaneTool,
   MCP_TRUSTED_CODEX_ARGS_ENV,
   MCP_TRUSTED_CODEX_COMMAND_ENV,
+  MCP_TRUSTED_VERIFICATION_FILE_ENV,
 } from "../../src/mcp/tools.js";
-import { createTestRepository, git, mockAppServerPath } from "../helpers.js";
+import { createTestRepository, git, mockAppServerPath, testConfig } from "../helpers.js";
 
 void test("remote MCP tool policy blocks repository paths outside allowed roots", async () => {
   const allowed = await mkdtemp(join(tmpdir(), "counterlane-allowed-"));
@@ -61,6 +62,103 @@ void test("MCP execution rejects lastTurnId without threadId before opening a wo
   );
   assert.equal(result.isError, true);
   assert.match(result.content[0]?.text ?? "", /lastTurnId requires threadId/u);
+});
+
+void test("counterlane_execute returns configuration_required before any model turn without a trusted task verifier", async () => {
+  const repository = await createTestRepository({ verifier: false });
+  const logDirectory = await mkdtemp(join(tmpdir(), "counterlane-mcp-execute-preflight-"));
+  const requestLog = join(logDirectory, "requests.jsonl");
+  const previousLog = process.env["MOCK_REQUEST_LOG"];
+  process.env["MOCK_REQUEST_LOG"] = requestLog;
+  try {
+    const result = await callCounterlaneTool(
+      "counterlane_execute",
+      { cwd: repository, prompt: "Correct the fixture answer exactly." },
+      { trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] } },
+    );
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured["state"], "configuration_required");
+    assert.equal(structured["modelTurnStarted"], false);
+    assert.equal(structured["reservedAttempts"], 0);
+    assert.equal(structured["spentAttempts"], 0);
+    const requests = await readFile(requestLog, "utf8");
+    assert.match(requests, /"method":"model\/list"/u);
+    assert.doesNotMatch(requests, /"method":"thread\/(?:start|fork)"|"method":"turn\/start"/u);
+  } finally {
+    restoreEnvironment("MOCK_REQUEST_LOG", previousLog);
+  }
+});
+
+void test("counterlane_execute uses one bounded product attempt and never acquires a Twin", async () => {
+  const repository = await createTestRepository({ verifier: false });
+  const logDirectory = await mkdtemp(join(tmpdir(), "counterlane-mcp-product-execute-"));
+  const requestLog = join(logDirectory, "requests.jsonl");
+  const hostVerifier = join(logDirectory, "host-task-contract.mjs");
+  const previousLog = process.env["MOCK_REQUEST_LOG"];
+  process.env["MOCK_REQUEST_LOG"] = requestLog;
+  const base = testConfig().verification;
+  try {
+    await writeFile(
+      hostVerifier,
+      "import { readFileSync } from 'node:fs'; process.exit(readFileSync('answer.txt', 'utf8') === 'correct\\n' ? 0 : 1);\n",
+      "utf8",
+    );
+    const result = await callCounterlaneTool(
+      "counterlane_execute",
+      {
+        cwd: repository,
+        prompt: "Correct the fixture answer exactly.",
+        speedMode: "off",
+        executionContext: "foreground",
+      },
+      {
+        trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] },
+        evidenceKind: "simulated",
+        trustedVerification: {
+          ...base,
+          autoDetect: false,
+          commands: [{
+            name: "host-task-contract",
+            command: [process.execPath, hostVerifier],
+            required: true,
+            taskSpecific: true,
+            candidateCodePolicy: "data-only",
+            minimumTier: "standard",
+          }],
+        },
+      },
+    );
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured["state"], "verified", JSON.stringify(structured));
+    assert.equal(structured["modelTurnStarted"], true);
+    assert.equal(structured["maxExpensiveTurns"], 2);
+    assert.equal(structured["reservedAttempts"], 1);
+    assert.equal(structured["spentAttempts"], 1);
+    assert.equal(structured["unknownAttempts"], 0);
+    const receipt = structured["receipt"] as Record<string, unknown>;
+    const attempts = receipt["attempts"] as Array<Record<string, unknown>>;
+    assert.equal(attempts.length, 1);
+    const verification = attempts[0]?.["verification"] as Record<string, unknown>;
+    assert.equal(verification["integrity"], "intact");
+    assert.equal((verification["containment"] as Record<string, unknown>)["environment"], "minimal-allowlist");
+    assert.equal((verification["containment"] as Record<string, unknown>)["network"], "unverified");
+    assert.equal((receipt["evidence"] as Record<string, unknown>)["kind"], "simulated");
+    const receiptArtifacts = structured["receiptArtifacts"] as Record<string, unknown>;
+    const runId = String(receiptArtifacts["runId"]);
+    const persistedReceipt = await readFile(join(repository, ".counterlane", "receipts", `${runId}.json`), "utf8");
+    const persistedPublicReceipt = await readFile(join(repository, ".counterlane", "receipts", `${runId}.public.json`), "utf8");
+    assert.match(persistedReceipt, /"receiptHash"/u);
+    assert.match(persistedPublicReceipt, /"publicReceiptHash"/u);
+    assert.equal(receiptArtifacts["localReceiptHash"], (receipt["receiptHash"] as string));
+    const requests = await readFile(requestLog, "utf8");
+    assert.equal((requests.match(/"method":"thread\/start"/gu) ?? []).length, 1);
+    assert.equal((requests.match(/"method":"turn\/start"/gu) ?? []).length, 1);
+    assert.doesNotMatch(requests, /"method":"thread\/fork"/u);
+  } finally {
+    restoreEnvironment("MOCK_REQUEST_LOG", previousLog);
+  }
 });
 
 void test("MCP decide propagates cancellation into its meta-plan App Server calls", async () => {
@@ -200,6 +298,112 @@ void test("MCP ignores repository-controlled explicit and auto-detected verifier
   assert.equal(verification["requiredTotal"], 0);
   await assert.rejects(access(explicitMarker), isMissingPath);
   await assert.rejects(access(detectedMarker), isMissingPath);
+});
+
+void test("MCP accepts a standard verifier only from an absolute host-owned policy file", async () => {
+  const repository = await createTestRepository({ verifier: false });
+  const policyDirectory = await mkdtemp(join(tmpdir(), "counterlane-mcp-host-policy-"));
+  const policyPath = join(policyDirectory, "counterlane.config.json");
+  const hostVerifier = join(policyDirectory, "host-standard.mjs");
+  await writeFile(
+    hostVerifier,
+    "import { readFileSync } from 'node:fs'; process.exit(readFileSync('answer.txt', 'utf8') === 'correct\\n' ? 0 : 1);\n",
+    "utf8",
+  );
+  await writeFile(policyPath, `${JSON.stringify({
+    verification: {
+      autoDetect: false,
+      commands: [{
+        name: "host-standard",
+        command: [process.execPath, hostVerifier],
+        required: true,
+        taskSpecific: true,
+        candidateCodePolicy: "data-only",
+        minimumTier: "standard",
+      }],
+    },
+  })}\n`, "utf8");
+  const previous = process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV];
+  process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV] = policyPath;
+  try {
+    const result = await callCounterlaneTool(
+      "counterlane_route",
+      { cwd: repository, prompt: "Correct the fixture answer exactly.", proofTier: "standard" },
+      { trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] } },
+    );
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    const verification = result.structuredContent?.["verification"] as Record<string, unknown>;
+    assert.deepEqual(verification["availableTiers"], ["standard"]);
+    assert.equal(verification["selectedCommandCount"], 1);
+    assert.equal(verification["selectedTaskSpecificCommandCount"], 1);
+    assert.equal(verification["taskSpecificRequired"], true);
+    assert.equal(verification["coverage"], "task-specific-declared");
+    assert.equal(verification["hostVerification"], "not-run");
+    assert.equal(verification["externalAdjudication"], "not-performed");
+
+    const executed = await callCounterlaneTool(
+      "counterlane_run",
+      { cwd: repository, prompt: "Correct the fixture answer exactly.", mode: "auto" },
+      { trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] } },
+    );
+    assert.equal(executed.isError, undefined, executed.content[0]?.text);
+    assert.equal(executed.structuredContent?.["successful"], true);
+    const executedVerification = executed.structuredContent?.["verification"] as Record<string, unknown>;
+    assert.equal(executedVerification["hostVerified"], true);
+    assert.equal(executedVerification["verified"], true, "legacy alias remains host-scoped");
+    assert.equal(executedVerification["taskSpecificPassed"], 1);
+    assert.equal(executedVerification["taskSpecificTotal"], 1);
+    assert.equal(executedVerification["externalAdjudication"], "not-performed");
+  } finally {
+    restoreEnvironment(MCP_TRUSTED_VERIFICATION_FILE_ENV, previous);
+  }
+});
+
+void test("MCP refuses proof credit when a host verifier lacks task-specific coverage", async () => {
+  const repository = await createTestRepository({ verifier: false });
+  const policyDirectory = await mkdtemp(join(tmpdir(), "counterlane-mcp-generic-policy-"));
+  const policyPath = join(policyDirectory, "counterlane.config.json");
+  await writeFile(policyPath, `${JSON.stringify({
+    verification: {
+      autoDetect: false,
+      commands: [{
+        name: "generic-repository-check",
+        command: [process.execPath, "--version"],
+        required: true,
+        minimumTier: "standard",
+      }],
+    },
+  })}\n`, "utf8");
+  const previous = process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV];
+  process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV] = policyPath;
+  try {
+    const result = await callCounterlaneTool(
+      "counterlane_route",
+      { cwd: repository, prompt: "Correct the fixture answer exactly.", proofTier: "standard" },
+      { trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] } },
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? "", /proof tier standard is unavailable/iu);
+  } finally {
+    restoreEnvironment(MCP_TRUSTED_VERIFICATION_FILE_ENV, previous);
+  }
+});
+
+void test("MCP rejects a relative trusted verifier policy path", async () => {
+  const repository = await createTestRepository({ verifier: false });
+  const previous = process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV];
+  process.env[MCP_TRUSTED_VERIFICATION_FILE_ENV] = "counterlane.config.json";
+  try {
+    const result = await callCounterlaneTool(
+      "counterlane_route",
+      { cwd: repository, prompt: "Correct the fixture answer exactly." },
+      { trustedCodexLaunch: { command: process.execPath, args: [mockAppServerPath] } },
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? "", /must be an absolute host-owned config path/iu);
+  } finally {
+    restoreEnvironment(MCP_TRUSTED_VERIFICATION_FILE_ENV, previous);
+  }
 });
 
 void test("loopback HTTP does not enable configuration overrides without explicit opt-in", () => {

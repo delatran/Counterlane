@@ -43,10 +43,16 @@ void test("configuration overlays merge recursively and validate", async () => {
     "routing": {
       "profile": "economy",
       "reservePercent": 35,
+      "minimumCompletion": {
+        "normal": 0.8,
+        "elevated": 0.91,
+        "critical": 0.98,
+      },
     },
     "verification": {
+      "requireTaskSpecificCheck": true,
       "commands": [
-        { "name": "custom", "command": ["node", "verify.mjs"], "required": true }
+        { "name": "custom", "command": ["node", "verify.mjs"], "required": true, "taskSpecific": true }
       ]
     }
   }`, "utf8");
@@ -54,8 +60,28 @@ void test("configuration overlays merge recursively and validate", async () => {
   assert.equal(configPath, path);
   assert.equal(config.routing.profile, "economy");
   assert.equal(config.routing.reservePercent, 35);
+  assert.equal(config.routing.minimumCompletion.elevated, 0.91);
   assert.equal(config.routing.static.family, "sol");
   assert.equal(config.verification.commands[0]?.name, "custom");
+  assert.equal(config.verification.commands[0]?.taskSpecific, true);
+  assert.equal(config.verification.requireTaskSpecificCheck, true);
+});
+
+void test("legacy badEscapePenalty migrates only to the detected verification failure penalty", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "counterlane-config-legacy-utility-"));
+  const path = join(directory, "legacy.json");
+  await writeFile(path, JSON.stringify({ utility: { badEscapePenalty: 73 } }), "utf8");
+  const { config } = await loadConfig({ cwd: directory, configPath: path });
+  assert.equal(config.utility.detectedVerificationFailurePenalty, 73);
+
+  const contradictory = join(directory, "contradictory.json");
+  await writeFile(contradictory, JSON.stringify({
+    utility: { badEscapePenalty: 73, detectedVerificationFailurePenalty: 9 },
+  }), "utf8");
+  await assert.rejects(
+    loadConfig({ cwd: directory, configPath: contradictory }),
+    /contradictory utility\.badEscapePenalty/u,
+  );
 });
 
 void test("implicit configuration discovery searches upward from a nested non-Git directory", async () => {
@@ -115,6 +141,7 @@ void test("probability tables and p90 predictions stay inside their semantic bou
   for (const [name, overlay, expectedPath] of [
     ["detection-floor", { verification: { routing: { detectionFloors: { basic: 2 } } } }, /detectionFloors\.basic/u],
     ["detection-boost", { verification: { routing: { detectionBoosts: { basic: 1.01 } } } }, /detectionBoosts\.basic/u],
+    ["minimum-completion", { routing: { minimumCompletion: { elevated: 1.01 } } }, /minimumCompletion\.elevated/u],
     ["p90", { routing: { prediction: { p90Multiplier: 0.1 } } }, /p90Multiplier/u],
   ] as const) {
     const path = join(directory, `${name}.json`);

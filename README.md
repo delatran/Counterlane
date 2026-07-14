@@ -2,33 +2,44 @@
 
 # Counterlane
 
-### Evidence-driven adaptive compute control for Codex
+### Verification-gated compute governor for Codex
 
-**Route model, reasoning depth, speed, topology, and verification—then prove the lane earned its cost.**
+**Counterlane is the verification-gated compute governor for Codex: start with the least expensive admissible route, prove the result, escalate only on bounded evidence, and show the complete route receipt.**
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](LICENSE)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Codex App Server](https://img.shields.io/badge/control%20plane-Codex%20App%20Server-111827)](https://developers.openai.com/codex/app-server)
 [![MCP](https://img.shields.io/badge/protocol-MCP-7C3AED)](https://developers.openai.com/codex/mcp)
-[![Status](https://img.shields.io/badge/status-research%20grade-F59E0B)](#project-status)
+[![Status](https://img.shields.io/badge/status-approval__required-D97706)](RELEASE_STATUS.json)
 
-**[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Integrations](#integration-surfaces)** · **[Configuration](#configuration)** · **[Research](#research-and-evaluation)**
+**[Quick start](#quick-start)** · **[Product workflow](#product-workflow)** · **[Integrations](#integration-surfaces)** · **[Configuration](#configuration)** · **[Research](#research-and-evaluation)**
 
 </div>
 
 ---
 
-Counterlane is a verification-first control plane for Codex. It selects a complete execution route from the capabilities available at runtime, runs work inside isolated Git worktrees, verifies the result, and can compare an adaptive route against an unchanged static policy from the same prompt, conversation history, and repository state.
-
-> **The router must earn the right to route.**
->
-> Every route shift is measured against a control lane before it becomes policy.
-
-Counterlane does not assume Auto is always better. It can retain the incumbent policy, deploy an adaptive route, acquire paired counterfactual evidence, or abstain when unattended execution would be unsafe.
+Counterlane is a local, verification-first control plane for Codex. Its product execution path performs a no-spend preflight, freezes a task-specific verifier contract, runs one isolated route, and records a versioned non-applying receipt. A failed verifier is a detected failure, not a success with a confidence adjustment.
 
 > [!NOTE]
 > Counterlane is an independent research and engineering project. It is not affiliated with or endorsed by OpenAI.
+
+## Product workflow
+
+The preferred MCP path is counterlane_execute. It never starts a hidden Twin, Compare, background exploration, or patch application.
+
+1. The host supplies a trusted, task-specific verifier policy whose immutable external entrypoint declares a data-only candidate contract.
+2. Counterlane validates runtime capability, quota, repository state, verification containment, and the frozen execution envelope before a model turn starts.
+3. It starts one isolated route and may make at most one strict sequential escalation after observed failure. A successor must be connected by the frozen explicit capability graph; a scalar score, speed tier, or proof tier cannot create an escalation edge.
+4. It returns a redacted public receipt and persists an authoritative local receipt. Actual provider billing and external adjudication remain explicitly unavailable unless separately observed.
+
+Product speed has three permissions:
+
+- **Off** forces Standard.
+- **Auto** may select an advertised premium tier only under its explicit foreground and deadline or urgency gates.
+- **Fast** requests an advertised configured premium tier or fails closed.
+
+Raw service-tier IDs and paired comparisons remain advanced Research surfaces. A faster tier does not receive a capability bonus.
 
 ## Why Counterlane?
 
@@ -72,11 +83,11 @@ This separation matters. Fast is not a smarter model. Max is not Ultra. A diffic
 
 ## Project status
 
-Counterlane is a **research-grade, actively developed system** intended for controlled local use, reproducible experiments, and integration work.
+Counterlane is a local release candidate for Windows hosts with Node.js 22 and Git. Its machine-readable state is currently [`approval_required`](RELEASE_STATUS.json). Run `npm run release:status` to verify that state. Deterministic checks and simulated fixtures cannot change it to `production_ready`; that transition requires a fresh owner-authorized runtime smoke bound to the final source manifest, launcher digests, a certifying verifier result, bounded attempt accounting, and observed cleanup.
 
-The repository includes the routing control plane, paired execution, verification, telemetry, Codex plugin, MCP server, protocol mocks, and automated tests. Its coefficients are transparent bootstrap priors—not a claim of universal superiority over native defaults or other routers.
+The repository includes product execution, Research comparison surfaces, verification, receipts, packaging checks, a Codex plugin, an MCP server, protocol mocks, and automated tests. It makes no claim of measured savings, real provider economics, live model quality, hosted availability, or multi-tenant operation.
 
-A production deployment should add organization-specific authentication, remote workspace isolation, cancellation propagation, observability, secret management, and host-level end-to-end tests.
+Linux and macOS are currently untested support boundaries. A hosted deployment, organization authentication, remote workspace isolation, cancellation propagation, observability, and secret management are future work rather than bundled product claims.
 
 ## How it works
 
@@ -409,12 +420,14 @@ The plugin exposes:
 |---|---:|---|
 | `counterlane_models` | Read-only | Inspect model, effort, speed-tier, and quota availability |
 | `counterlane_route` | Read-only | Recommend a route without execution |
-| `counterlane_decide` | Read-only | Select `STATIC`, `AUTO`, `TWIN`, or `ABSTAIN` |
-| `counterlane_execute` | Isolated execution | Run the full meta-controller without applying a patch |
-| `counterlane_run` | Isolated execution | Run one explicit static or adaptive arm |
-| `counterlane_compare` | Isolated execution | Run both policies and return verified evidence |
+| `counterlane_decide` | Read-only Research | Inspect Static, Auto, Twin, or Abstain; starts no model turn |
+| `counterlane_execute` | Isolated product execution | Run bounded verification-gated execution with Off, Auto, or Fast speed permission; never starts Twin or Compare |
+| `counterlane_run` | Isolated advanced execution | Run one explicit static or adaptive arm |
+| `counterlane_compare` | Isolated Research | Run exactly two expensive comparison arms; not the product default |
 
 MCP execution never applies a patch to the original repository. Application remains an explicit CLI operation after review.
+
+The product response has a versioned schema and includes receipt metadata. The local receipt contains route, observed verifier, timing, attempt, reroute, and accounting-boundary evidence without raw prompts. The public receipt is deterministically redacted and does not expose local artifact paths.
 
 ## Speed is a first-class control
 
@@ -438,6 +451,8 @@ Speed affects:
 - utility of the complete verified workflow.
 
 Speed does **not** directly increase capability or success estimates.
+
+For the product MCP workflow, use the explicit Off, Auto, or Fast permission rather than a raw service-tier string. Auto and Fast fail closed when the host has not advertised and configured the requested premium tier.
 
 Configured cost and latency multipliers are bootstrap estimates. Production use should calibrate them from measured outcomes for each:
 
@@ -465,17 +480,22 @@ Explicit verifier commands are preferable for reproducible experiments:
     "autoDetect": false,
     "requireAtLeastOne": true,
     "failOnNoVerifier": true,
+    "requireTaskSpecificCheck": true,
     "commands": [
       {
         "name": "tests",
         "command": ["npm", "test"],
         "required": true,
+        "taskSpecific": true,
+        "candidateCodePolicy": "executes-candidate-code",
+        "minimumTier": "standard",
         "timeoutMs": 900000
       },
       {
         "name": "typecheck",
         "command": ["npm", "run", "typecheck"],
-        "required": true
+        "required": true,
+        "minimumTier": "basic"
       }
     ]
   }
@@ -483,6 +503,19 @@ Explicit verifier commands are preferable for reproducible experiments:
 ```
 
 Verifier commands run directly as argument arrays, not through a shell.
+
+`taskSpecific: true` is an explicit policy assertion that the command exercises
+the delegated task contract. With `requireTaskSpecificCheck: true`, generic
+repository-health checks may still run as supporting evidence but cannot earn
+proof credit by themselves. This assertion does not replace an external oracle.
+
+`candidateCodePolicy` declares whether the verifier treats candidate files as
+data only or executes/imports them. Repository test runners should declare
+`executes-candidate-code`. Product MCP certification is narrower: it requires a
+host-authorized, absolute external verifier entrypoint with
+`candidateCodePolicy: "data-only"`. Inline interpreter programs and wrappers
+inside the candidate repository remain non-certifying even if a host policy
+names them.
 
 Auto-detection recognizes common entry points such as `npm test`, npm type-check scripts, optional npm lint scripts, `pytest`, `cargo test`, and `go test ./...`.
 
@@ -544,6 +577,8 @@ Artifacts live under `.counterlane/` by default:
 ```
 
 Certificates summarize route, speed tier, topology, verification, cost, latency, winner selection, source-state integrity, reroutes, and remaining uncertainty.
+
+Product receipts are not Research certificates. A product receipt reports observed execution facts and its accounting boundary; it does not establish a causal routing benefit or a full-system savings claim.
 
 ## Research and evaluation
 

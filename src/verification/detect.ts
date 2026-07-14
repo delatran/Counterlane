@@ -48,6 +48,7 @@ export async function inspectVerificationCapabilities(
   const commands = await resolveVerificationCommands(cwd, config);
   const availableTiers: ProofTier[] = [];
   const commandCountByTier = emptyTierRecord(0);
+  const taskSpecificCommandCountByTier = emptyTierRecord(0);
   const requiredCountByTier = emptyTierRecord(0);
   const estimatedCostWeightByTier = emptyTierRecord(0);
 
@@ -55,6 +56,7 @@ export async function inspectVerificationCapabilities(
     const selected = commandsForProofTier(commands, tier);
     const minimumChecks = config.verification.routing.minimumIndependentChecks[tier];
     commandCountByTier[tier] = selected.length;
+    taskSpecificCommandCountByTier[tier] = selected.filter((command) => command.taskSpecific === true).length;
     requiredCountByTier[tier] = minimumChecks;
     estimatedCostWeightByTier[tier] = config.verification.routing.costWeights[tier];
 
@@ -66,6 +68,8 @@ export async function inspectVerificationCapabilities(
   return {
     availableTiers,
     commandCountByTier,
+    taskSpecificCommandCountByTier,
+    taskSpecificRequired: config.verification.requireTaskSpecificCheck,
     requiredCountByTier,
     estimatedCostWeightByTier,
     fingerprint: sha256(stableStringify({
@@ -73,6 +77,8 @@ export async function inspectVerificationCapabilities(
         name: command.name,
         command: command.command,
         required: command.required,
+        taskSpecific: command.taskSpecific === true,
+        candidateCodePolicy: command.candidateCodePolicy ?? "undeclared",
         minimumTier: commandMinimumTier(command),
         timeoutMs: command.timeoutMs ?? config.verification.defaultTimeoutMs,
         environment: command.environment ?? {},
@@ -80,6 +86,7 @@ export async function inspectVerificationCapabilities(
       routing: config.verification.routing,
       requireAtLeastOne: config.verification.requireAtLeastOne,
       failOnNoVerifier: config.verification.failOnNoVerifier,
+      requireTaskSpecificCheck: config.verification.requireTaskSpecificCheck,
     })),
   };
 }
@@ -90,18 +97,24 @@ function isTierAvailable(
   minimumChecks: number,
   config: CounterlaneConfig,
 ): boolean {
-  if (!config.verification.routing.enabled) {
-    return tier === config.verification.routing.defaultTier && (
-      selected.length >= minimumChecks ||
-      (!config.verification.requireAtLeastOne && !config.verification.failOnNoVerifier)
-    );
+  if (!config.verification.routing.enabled && tier !== config.verification.routing.defaultTier) {
+    return false;
   }
 
-  if (selected.length < minimumChecks) {
+  const verifierOptional = selected.length === 0 &&
+    !config.verification.requireAtLeastOne &&
+    !config.verification.failOnNoVerifier;
+  if (selected.length < minimumChecks && !verifierOptional) {
     return false;
   }
   if (selected.length === 0) {
-    return !config.verification.requireAtLeastOne && !config.verification.failOnNoVerifier;
+    return verifierOptional;
+  }
+  if (config.verification.requireTaskSpecificCheck && !hasTaskSpecificCoverage(tier, selected)) {
+    return false;
+  }
+  if (!config.verification.routing.enabled) {
+    return true;
   }
 
   // A pile of lint-only checks must not masquerade as executable validation.
@@ -125,6 +138,24 @@ function isTierAvailable(
   }
 
   return true;
+}
+
+function hasTaskSpecificCoverage(
+  tier: ProofTier,
+  selected: readonly VerificationCommandConfig[],
+): boolean {
+  if (tier === "adversarial") {
+    return selected.some((command) =>
+      command.taskSpecific === true && commandMinimumTier(command) === "adversarial"
+    );
+  }
+  if (tier === "standard" || tier === "strong") {
+    return selected.some((command) =>
+      command.taskSpecific === true &&
+      proofTierRank(commandMinimumTier(command)) >= proofTierRank("standard")
+    );
+  }
+  return selected.some((command) => command.taskSpecific === true);
 }
 
 async function detectCommands(cwd: string): Promise<VerificationCommandConfig[]> {
@@ -224,6 +255,7 @@ function deduplicate(commands: readonly VerificationCommandConfig[]): Verificati
     byCommand.set(key, {
       ...previous,
       required: previous.required || current.required,
+      taskSpecific: previous.taskSpecific === true || current.taskSpecific === true,
       minimumTier: proofTierRank(commandMinimumTier(previous)) <= proofTierRank(commandMinimumTier(current))
         ? commandMinimumTier(previous)
         : commandMinimumTier(current),

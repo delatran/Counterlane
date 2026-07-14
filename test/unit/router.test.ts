@@ -54,6 +54,68 @@ void test("mechanical, testable work avoids the most expensive family", () => {
   assert.notEqual(decision.selected.modelFamily, "sol");
   assert.equal(decision.selected.topology, "single");
   assert.ok(decision.selected.admissible);
+  assert.equal(
+    decision.selected.predictedNormalizedCredits,
+    Math.min(...decision.candidates.filter((candidate) => candidate.admissible)
+      .map((candidate) => candidate.predictedNormalizedCredits)),
+  );
+});
+
+void test("dense algorithmic contracts require completion strength before minimizing route cost", () => {
+  const prompt = `Implement a production-quality deterministic causal event-stream reconciler in src/reconcile.ts.
+
+Requirements:
+- streams must be validated before applying events;
+- replica identifiers must be unique non-empty strings;
+- sequence numbers must be positive safe integers;
+- dependencies must reference existing events;
+- the dependency graph must be acyclic;
+- each event must include an exact operation shape;
+- set operations must deep clone JSON values;
+- delete operations must preserve prototype safety;
+- increment operations must reject safe-integer overflow;
+- the immediately previous event is an implicit dependency;
+- error classes must distinguish wrong types from invalid values;
+- returned snapshots must be independent deep-cloned objects;
+- unknown dependencies must fail before state mutation;
+- output keys and ordering must be deterministic and exact.
+
+Treat this as production reconciliation code and run the task-specific tests.`;
+  const wordingVariant = prompt
+    .replaceAll("production-quality", "robust")
+    .replaceAll("production reconciliation code", "robust reconciliation logic")
+    .replaceAll("immediately previous", "prior")
+    .replaceAll("independent deep-cloned", "separately deep-cloned")
+    .replaceAll("unknown dependencies", "missing dependencies");
+  const config = testConfig();
+
+  for (const candidatePrompt of [prompt, wordingVariant]) {
+    const decision = new AutoRouter(config).decide({
+      prompt: candidatePrompt,
+      repo,
+      catalog,
+      quota: healthyQuota,
+    });
+    assert.equal(decision.features.taskKind, "feature");
+    assert.ok(decision.features.depth >= 0.72, `expected elevated depth, received ${decision.features.depth}`);
+    assert.equal(decision.features.latencySensitivity, 0);
+    assert.ok(decision.features.parallelizability < 0.62);
+    assert.ok(decision.selected.successEstimate >= config.routing.minimumCompletion.elevated);
+    assert.ok(decision.rationale.some((reason) => reason.includes("heuristic prior")));
+    assert.equal(
+      decision.selected.predictedNormalizedCredits,
+      Math.min(...decision.candidates.filter((candidate) => candidate.admissible)
+        .map((candidate) => candidate.predictedNormalizedCredits)),
+    );
+
+    const terraLow = decision.candidates.find((candidate) =>
+      candidate.modelFamily === "terra" && candidate.effort === "low" &&
+      candidate.speedId === "standard" && candidate.proofTier === "standard"
+    );
+    assert.ok(terraLow);
+    assert.equal(terraLow?.admissible, false);
+    assert.ok(terraLow?.rejectionReasons.some((reason) => reason.includes("completion estimate")));
+  }
 });
 
 void test("diagnostic fallback routes cannot be promoted into execution policies", () => {
@@ -65,6 +127,8 @@ void test("diagnostic fallback routes cannot be promoted into execution policies
     verificationCapabilities: {
       availableTiers: ["basic"],
       commandCountByTier: { basic: 1, standard: 1, strong: 1, adversarial: 1 },
+      taskSpecificCommandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+      taskSpecificRequired: false,
       requiredCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 2 },
       estimatedCostWeightByTier: { basic: 0.2, standard: 0.55, strong: 1, adversarial: 1.8 },
       fingerprint: "basic-only",
@@ -85,6 +149,10 @@ void test("diagnostic fallback routes cannot be promoted into execution policies
   assert.equal(summary["action"], "abstain");
   assert.equal(summary["admissible"], false);
   assert.deepEqual(summary["rejectionReasons"], decision.selected.rejectionReasons);
+  assert.equal(
+    (summary["selected"] as Record<string, unknown>)["completionEstimateSource"],
+    "heuristic-prior",
+  );
 });
 
 void test("high-risk authentication work receives the Sol floor", () => {
@@ -291,6 +359,80 @@ void test("speed is routed independently and Fast wins only for a time-critical 
   assert.ok(urgent.selected.predictedNormalizedCredits > standardTwin.predictedNormalizedCredits);
   assert.ok(urgent.selected.speedCostMultiplier > 1);
   assert.ok(urgent.selected.speedLatencyMultiplier < 1);
+});
+
+void test("product speed modes require structured premium permission and never change capability", () => {
+  const speedCatalog = parseModelCatalog({
+    data: [
+      entry("gpt-5.6-luna", false, ["low", "medium", "high", "max"]),
+      entry("gpt-5.6-terra", true, ["low", "medium", "high", "xhigh", "max"], true),
+    ],
+  });
+  const router = new AutoRouter(testConfig());
+  const prompt = "Urgent ASAP: rename the typo in src/name.ts exactly and run tests.";
+  const off = router.decide({
+    prompt,
+    repo,
+    catalog: speedCatalog,
+    quota: healthyQuota,
+    constraints: { speedMode: "off", executionContext: "foreground", latencyPriority: "urgent" },
+  });
+  const autoWithoutContext = router.decide({
+    prompt,
+    repo,
+    catalog: speedCatalog,
+    quota: healthyQuota,
+    constraints: { speedMode: "auto" },
+  });
+  const auto = router.decide({
+    prompt,
+    repo,
+    catalog: speedCatalog,
+    quota: healthyQuota,
+    constraints: {
+      speedMode: "auto",
+      executionContext: "foreground",
+      latencyPriority: "urgent",
+      deadlineMs: 80_000,
+    },
+  });
+  const fast = router.decide({
+    prompt,
+    repo,
+    catalog: speedCatalog,
+    quota: healthyQuota,
+    constraints: { speedMode: "fast", executionContext: "foreground" },
+  });
+
+  assert.equal(off.selected.speedId, "standard");
+  assert.equal(autoWithoutContext.selected.speedId, "standard");
+  const rejectedAutoFast = autoWithoutContext.candidates.find((candidate) => candidate.speedId === "fast");
+  assert.ok(rejectedAutoFast?.rejectionReasons.some((reason) => reason.includes("foreground execution context")));
+  assert.equal(auto.selected.speedId, "fast");
+  assert.equal(fast.selected.speedId, "fast");
+  const autoStandard = auto.candidates.find((candidate) =>
+    candidate.modelId === auto.selected.modelId &&
+    candidate.effort === auto.selected.effort &&
+    candidate.topology === auto.selected.topology &&
+    candidate.proofTier === auto.selected.proofTier &&
+    candidate.speedId === "standard"
+  );
+  assert.ok(autoStandard);
+  assert.equal(auto.selected.capabilityScore, autoStandard?.capabilityScore);
+  assert.equal(auto.selected.successEstimate, autoStandard?.successEstimate);
+});
+
+void test("product Fast fails closed when no advertised premium tier exists", () => {
+  assert.throws(
+    () => new AutoRouter(testConfig()).decide({
+      prompt: "Rename the typo and run tests.",
+      repo,
+      catalog,
+      quota: healthyQuota,
+      constraints: { speedMode: "fast", executionContext: "foreground" },
+    }),
+    /No Codex route matches the requested constraints/u,
+  );
 });
 
 void test("premium speed is quota-gated even when latency is urgent", () => {
@@ -618,6 +760,8 @@ void test("repository verification capabilities fail closed instead of inventing
       verificationCapabilities: {
         availableTiers: ["basic", "standard"],
         commandCountByTier: { basic: 1, standard: 1, strong: 1, adversarial: 1 },
+        taskSpecificCommandCountByTier: { basic: 0, standard: 0, strong: 0, adversarial: 0 },
+        taskSpecificRequired: false,
         requiredCountByTier: { basic: 1, standard: 1, strong: 2, adversarial: 2 },
         estimatedCostWeightByTier: { basic: 0.2, standard: 0.55, strong: 1, adversarial: 1.8 },
         fingerprint: "weak",
@@ -633,7 +777,7 @@ void test("hard deadlines and credit ceilings constrain the complete route", () 
   });
   const router = new AutoRouter(testConfig());
   const fast = router.decide({
-    prompt: "Urgent deterministic edit with tests.",
+    prompt: "Urgent: rename the typo in src/name.ts exactly as specified and run the existing tests and typecheck.",
     repo,
     catalog: speedCatalog,
     quota: healthyQuota,
@@ -644,7 +788,7 @@ void test("hard deadlines and credit ceilings constrain the complete route", () 
 
   assert.throws(
     () => router.decide({
-      prompt: "Urgent deterministic edit with tests.",
+      prompt: "Urgent: rename the typo in src/name.ts exactly as specified and run the existing tests and typecheck.",
       repo,
       catalog: speedCatalog,
       quota: healthyQuota,

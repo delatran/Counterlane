@@ -111,6 +111,10 @@ export function validateConfig(value: unknown): asserts value is CounterlaneConf
   expectBoolean(routing, "enableUltra", "routing");
   expectPercent(routing, "maxUsagePercentForMax", "routing");
   expectPercent(routing, "maxUsagePercentForUltra", "routing");
+  const minimumCompletion = expectObject(routing, "minimumCompletion", "routing");
+  expectUnitNumber(minimumCompletion, "normal", "routing.minimumCompletion");
+  expectUnitNumber(minimumCompletion, "elevated", "routing.minimumCompletion");
+  expectUnitNumber(minimumCompletion, "critical", "routing.minimumCompletion");
   const minimumQuality = expectObject(routing, "minimumQuality", "routing");
   expectUnitNumber(minimumQuality, "normal", "routing.minimumQuality");
   expectUnitNumber(minimumQuality, "elevated", "routing.minimumQuality");
@@ -201,6 +205,7 @@ export function validateConfig(value: unknown): asserts value is CounterlaneConf
   }
   expectBoolean(verification, "requireAtLeastOne", "verification");
   expectBoolean(verification, "failOnNoVerifier", "verification");
+  expectBoolean(verification, "requireTaskSpecificCheck", "verification");
   expectTimeoutMs(verification, "defaultTimeoutMs", "verification");
   expectPositiveInteger(verification, "maximumOutputBytes", "verification");
   const commands = verification["commands"];
@@ -227,10 +232,13 @@ export function validateConfig(value: unknown): asserts value is CounterlaneConf
     "normalizedCreditPenalty",
     "latencyPenaltyPerMinute",
     "failedTurnPenalty",
-    "badEscapePenalty",
+    "detectedVerificationFailurePenalty",
     "practicalEquivalenceMargin",
   ] as const) {
     expectNonNegativeNumber(utility, key, "utility");
+  }
+  if (utility["badEscapePenalty"] !== undefined) {
+    expectNonNegativeNumber(utility, "badEscapePenalty", "utility");
   }
 }
 
@@ -241,6 +249,12 @@ function validateVerificationCommand(value: unknown, path: string): asserts valu
   expectString(value, "name", path);
   expectStringArray(value, "command", true, path);
   expectBoolean(value, "required", path);
+  if (value["taskSpecific"] !== undefined) {
+    expectBoolean(value, "taskSpecific", path);
+  }
+  if (value["candidateCodePolicy"] !== undefined) {
+    expectEnum(value, "candidateCodePolicy", ["data-only", "executes-candidate-code"] as const, path);
+  }
   if (value["timeoutMs"] !== undefined) {
     expectTimeoutMs(value, "timeoutMs", path);
   }

@@ -32,7 +32,10 @@ export function printRoute(decision: RouteDecision): void {
   process.stdout.write(`  Task: ${decision.features.taskKind}\n`);
   process.stdout.write(`  Proof tier: ${selected.proofTier}\n`);
   process.stdout.write(`  Verification fingerprint: ${decision.verificationCapabilities.fingerprint.slice(0, 16)}\n`);
-  process.stdout.write(`  Success estimate: ${percent(selected.successEstimate)}\n`);
+  process.stdout.write(
+    `  Completion estimate: ${percent(selected.successEstimate)} ` +
+    `(${selected.calibrationSamples > 0 ? `empirical blend; ${selected.calibrationSamples} matching samples` : "heuristic prior; no matching samples"})\n`,
+  );
   process.stdout.write(`  Detection estimate: ${percent(selected.detectionEstimate)}\n`);
   process.stdout.write(`  Bad-escape estimate: ${percent(selected.badEscapeEstimate)}\n`);
   process.stdout.write(`  Predicted duration: ${(selected.predictedDurationMs / 1000).toFixed(1)}s mean / ${(selected.predictedP90DurationMs / 1000).toFixed(1)}s p90\n`);
@@ -62,7 +65,7 @@ export function printRoute(decision: RouteDecision): void {
     round(candidate.objective).toString(),
     candidate.admissible ? "yes" : "no",
   ]);
-  printTable(["Route", "Model", "P(success)", "P(detect)", "P90", "Credits", "Objective", "Admissible"], rows);
+  printTable(["Route", "Model", "Completion", "Detection", "P90", "Credits", "Objective", "Admissible"], rows);
 }
 
 export function printMetaDecision(decision: MetaDecision): void {
@@ -73,7 +76,7 @@ export function printMetaDecision(decision: MetaDecision): void {
   process.stdout.write(`  Paired samples: ${decision.posterior.sampleCount}\n`);
   process.stdout.write(`  Estimated uplift: ${decision.posterior.mean.toFixed(3)}\n`);
   process.stdout.write(
-    `  Confidence interval: [${decision.posterior.lowerBound.toFixed(3)}, ${decision.posterior.upperBound.toFixed(3)}]\n`,
+    `  Heuristic posterior band (not calibrated): [${decision.posterior.lowerBound.toFixed(3)}, ${decision.posterior.upperBound.toFixed(3)}]\n`,
   );
   process.stdout.write(`  Expected information value: ${decision.expectedInformationValue.toFixed(3)}\n`);
   process.stdout.write(`  Estimated twin cost: ${decision.estimatedTwinCost.toFixed(3)}\n`);
@@ -117,6 +120,11 @@ export function printExperiment(result: ExperimentResult): void {
   process.stdout.write(`${ansi.bold("Counterlane paired experiment")} ${ansi.dim(result.experimentId)}\n`);
   process.stdout.write(`  Winner: ${formatWinner(winner)}\n`);
   process.stdout.write(`  Decision: ${sanitizeTerminalText(result.winner.reason)}\n`);
+  process.stdout.write(`  Decision strength: ${result.winner.decisionStrength}\n`);
+  process.stdout.write(`  Cost leader: ${result.winner.costLeader} (${result.winner.costComparison})\n`);
+  process.stdout.write(`  Latency leader: ${result.winner.latencyLeader}\n`);
+  process.stdout.write(`  Partial leader: ${result.winner.partialLeader ?? "none"} (non-applicable)\n`);
+  process.stdout.write("  Confidence: not produced; no calibrated confidence value is implied.\n");
   process.stdout.write(`  Original repository unchanged: ${formatBoolean(result.originalStateUnchanged)}\n`);
   process.stdout.write(`  Winner applied: ${formatBoolean(result.appliedWinner)}\n`);
   process.stdout.write(`  Certificate: ${sanitizeTerminalText(result.certificatePath)}\n\n`);

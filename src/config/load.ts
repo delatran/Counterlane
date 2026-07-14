@@ -5,7 +5,7 @@ import { deepMerge, validateConfig } from "./schema.js";
 import type { CounterlaneConfig } from "./types.js";
 import { pathExists, parseJsonc, readUtf8Bounded, writeJsonAtomic, writeJsonAtomicNew } from "../core/utils.js";
 import { ConfigurationError } from "../core/errors.js";
-import type { JsonObject } from "../core/json.js";
+import { isJsonObject, type JsonObject } from "../core/json.js";
 
 export const DEFAULT_CONFIG_FILE = "counterlane.config.json";
 const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
@@ -46,7 +46,8 @@ export async function loadConfig(options: {
       throw new ConfigurationError(`Configuration file ${requestedPath} must contain an object.`);
     }
     assertConfigComplexity(raw, requestedPath);
-    merged = deepMerge(merged, raw as JsonObject);
+    const normalized = normalizeLegacyUtilityConfig(raw as JsonObject, requestedPath);
+    merged = deepMerge(merged, normalized);
     loadedPath = requestedPath;
   } else if (options.configPath !== undefined) {
     throw new ConfigurationError(`Configuration file not found: ${requestedPath}`);
@@ -54,6 +55,22 @@ export async function loadConfig(options: {
 
   validateConfig(merged);
   return { config: merged, configPath: loadedPath };
+}
+
+function normalizeLegacyUtilityConfig(raw: JsonObject, path: string): JsonObject {
+  const utility = raw["utility"];
+  if (!isJsonObject(utility)) return raw;
+  const legacy = utility["badEscapePenalty"];
+  const current = utility["detectedVerificationFailurePenalty"];
+  if (legacy === undefined) return raw;
+  if (current !== undefined && current !== legacy) {
+    throw new ConfigurationError(
+      `Configuration file ${path} has contradictory utility.badEscapePenalty and utility.detectedVerificationFailurePenalty values.`,
+    );
+  }
+  if (current === undefined) utility["detectedVerificationFailurePenalty"] = legacy;
+  delete utility["badEscapePenalty"];
+  return raw;
 }
 
 export async function writeDefaultConfig(path: string, overwrite = false): Promise<void> {

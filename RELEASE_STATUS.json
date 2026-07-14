@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "status": "approval_required",
+  "supportBoundary": "local-self-hosted-win32-node22-git",
+  "liveEvidenceFile": null,
+  "reason": "The final source manifest requires a fresh owner-authorized live MCP smoke before production_ready can be asserted.",
+  "limitations": [
+    "No model-quality or savings claim is established.",
+    "macOS, Linux, network containment, and production-scale reliability are unverified."
+  ]
+}

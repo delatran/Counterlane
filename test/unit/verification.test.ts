@@ -30,6 +30,74 @@ void test("strong proof can combine an executable standard check with an indepen
   assert.equal(capabilities.availableTiers.includes("adversarial"), false);
 });
 
+void test("a generic host check cannot earn task-specific proof credit", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "counterlane-task-proof-"));
+  const genericBase = configWithCommands([check("task-contract-check", "standard")]);
+  const generic = testConfig({
+    verification: {
+      ...genericBase.verification,
+      requireTaskSpecificCheck: true,
+    },
+  });
+  const declaredBase = configWithCommands([check("task-contract-check", "standard", true)]);
+  const declared = testConfig({
+    verification: {
+      ...declaredBase.verification,
+      requireTaskSpecificCheck: true,
+    },
+  });
+
+  const [genericCapabilities, declaredCapabilities] = await Promise.all([
+    inspectVerificationCapabilities(cwd, generic),
+    inspectVerificationCapabilities(cwd, declared),
+  ]);
+  assert.deepEqual(genericCapabilities.availableTiers, []);
+  assert.equal(genericCapabilities.taskSpecificCommandCountByTier.standard, 0);
+  assert.deepEqual(declaredCapabilities.availableTiers, ["standard"]);
+  assert.equal(declaredCapabilities.taskSpecificCommandCountByTier.standard, 1);
+  assert.notEqual(genericCapabilities.fingerprint, declaredCapabilities.fingerprint);
+
+  const logger = new Logger({ level: "silent", json: true });
+  const [genericReport, declaredReport] = await Promise.all([
+    new BlindVerifier(generic, logger).verify(cwd, "standard"),
+    new BlindVerifier(declared, logger).verify(cwd, "standard"),
+  ]);
+  assert.equal(genericReport.checks.length, 1, "generic checks remain executable evidence");
+  assert.equal(genericReport.adequate, false);
+  assert.equal(genericReport.passed, false);
+  assert.equal(genericReport.taskSpecificRequired, true);
+  assert.equal(genericReport.taskSpecificTotal, 0);
+  assert.equal(declaredReport.adequate, true);
+  assert.equal(declaredReport.passed, true);
+  assert.equal(declaredReport.taskSpecificPassed, 1);
+  assert.equal(declaredReport.taskSpecificTotal, 1);
+});
+
+void test("a failing task-specific check blocks proof even when configured optional", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "counterlane-task-proof-fail-"));
+  const base = configWithCommands([{
+    name: "task-contract-check",
+    command: [process.execPath, "-e", "process.exit(1)"],
+    required: false,
+    taskSpecific: true,
+    minimumTier: "standard",
+  }]);
+  const config = testConfig({
+    verification: {
+      ...base.verification,
+      requireTaskSpecificCheck: true,
+    },
+  });
+
+  const report = await new BlindVerifier(config, new Logger({ level: "silent", json: true }))
+    .verify(cwd, "standard");
+  assert.equal(report.adequate, true);
+  assert.equal(report.requiredTotal, 0);
+  assert.equal(report.taskSpecificPassed, 0);
+  assert.equal(report.taskSpecificTotal, 1);
+  assert.equal(report.passed, false);
+});
+
 void test("a higher-tier command cannot make a lower tier available when it would not execute", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "counterlane-proof-"));
   const config = configWithCommands([
@@ -140,11 +208,16 @@ void test("verifier identity includes explicit environment semantics", async () 
   assert.notEqual(passingReport.verifierHash, failingReport.verifierHash);
 });
 
-function check(name: string, minimumTier: "basic" | "standard" | "strong" | "adversarial"): VerificationCommandConfig {
+function check(
+  name: string,
+  minimumTier: "basic" | "standard" | "strong" | "adversarial",
+  taskSpecific = false,
+): VerificationCommandConfig {
   return {
     name,
     command: [process.execPath, "-e", `console.log(${JSON.stringify(name)})`],
     required: true,
+    ...(taskSpecific ? { taskSpecific: true } : {}),
     minimumTier,
   };
 }

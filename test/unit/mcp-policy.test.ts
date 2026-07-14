@@ -35,6 +35,7 @@ void test("MCP repository config cannot broaden host Codex launch or sandbox aut
   assert.equal(secured.verification.routing.minimumTierByRisk.critical, "strong");
   assert.equal(secured.verification.requireAtLeastOne, false);
   assert.equal(secured.verification.failOnNoVerifier, false);
+  assert.equal(secured.verification.requireTaskSpecificCheck, true);
   assert.deepEqual(secured.verification.commands, []);
   assert.equal(secured.meta.enabled, false, "unverified remote execution must not buy a second arm");
 });
@@ -60,6 +61,7 @@ void test("MCP accepts verifier authority only from an explicit host-owned polic
     name: "host",
     command: ["host-verifier", "--check"],
     required: true,
+    taskSpecific: true,
     minimumTier: "standard",
     environment: { HOST_POLICY: "1" },
   }];
@@ -69,7 +71,11 @@ void test("MCP accepts verifier authority only from an explicit host-owned polic
     { command: "codex", args: ["app-server"] },
     trustedVerification,
   );
-  assert.deepEqual(secured.verification, trustedVerification);
+  assert.deepEqual(secured.verification, {
+    ...trustedVerification,
+    requireTaskSpecificCheck: true,
+  });
+  assert.equal(trustedVerification.requireTaskSpecificCheck, false);
   assert.notEqual(secured.verification, trustedVerification);
   assert.notEqual(secured.verification.routing, trustedVerification.routing);
   assert.notEqual(secured.verification.commands[0], trustedVerification.commands[0]);

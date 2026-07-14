@@ -18,6 +18,14 @@ class FakeTransport extends EventEmitter {
   }
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+  throw new Error("Timed out waiting for JSON-RPC transport activity.");
+}
+
 void test("JSON-RPC responses must contain exactly one of result or error", async () => {
   const transport = new FakeTransport();
   const client = new JsonRpcClient({
@@ -51,6 +59,40 @@ void test("JSON-RPC accepts an explicit null result", async () => {
   const id = transport.sent.at(-1)?.["id"];
   transport.emit("message", { id, result: null });
   assert.equal(await request, null);
+});
+
+void test("JSON-RPC retries a classified read once after overload without duplicating its logical result", async () => {
+  const transport = new FakeTransport();
+  const client = new JsonRpcClient({
+    transport: transport as unknown as StdioJsonRpcTransport,
+    logger: new Logger({ level: "silent", json: true }),
+    requestTimeoutMs: 1_000,
+  });
+  const request = client.request("model/list");
+  const firstId = transport.sent.at(-1)?.["id"];
+  transport.emit("message", { id: firstId, error: { code: -32_001, message: "overloaded" } });
+  await waitFor(() => transport.sent.length === 2);
+  const secondId = transport.sent.at(-1)?.["id"];
+  assert.notEqual(firstId, secondId);
+  transport.emit("message", { id: secondId, result: { data: [] } });
+  assert.deepEqual(await request, { data: [] });
+  assert.equal(transport.sent.length, 2);
+});
+
+void test("JSON-RPC never blindly replays a state-creating request after overload", async () => {
+  const transport = new FakeTransport();
+  const client = new JsonRpcClient({
+    transport: transport as unknown as StdioJsonRpcTransport,
+    logger: new Logger({ level: "silent", json: true }),
+    requestTimeoutMs: 1_000,
+  });
+  const request = client.request("turn/start", { threadId: "thread_1" });
+  const id = transport.sent.at(-1)?.["id"];
+  transport.emit("message", { id, error: { code: -32_001, message: "overloaded" } });
+  await assert.rejects(request, (error: unknown) =>
+    error instanceof CodexProtocolError && error.rpcCode === -32_001
+  );
+  assert.equal(transport.sent.length, 1);
 });
 
 void test("JSON-RPC never sends a request when cancellation wins during listener registration", async () => {

@@ -376,6 +376,59 @@ void test("post-commit cleanup warnings are returned and persisted without undoi
   }
 });
 
+void test("post-run cleanup warnings preserve an isolated non-applying result", async () => {
+  const root = await createTestRepository();
+  const base = testConfig();
+  const config = testConfig({
+    codex: { ...base.codex, command: process.execPath, args: [mockAppServerPath] },
+    twin: { ...base.twin, preserveWorktrees: "never" },
+    verification: {
+      ...base.verification,
+      autoDetect: false,
+      commands: [{
+        name: "fixture",
+        command: [process.execPath, "answer.test.mjs"],
+        required: true,
+        minimumTier: "basic",
+      }],
+    },
+    telemetry: { ...base.telemetry, enabled: false },
+  });
+  const repository = await GitRepository.discover(root);
+  const originalDeleteThread = CodexAppServer.prototype.deleteThread;
+  CodexAppServer.prototype.deleteThread = async function (threadId): Promise<void> {
+    await originalDeleteThread.call(this, threadId);
+    throw new Error("simulated isolated cleanup failure");
+  };
+
+  try {
+    const result = await new SingleRunner({
+      repository,
+      config,
+      telemetry: new TelemetryStore(root, config),
+      logger: new Logger({ level: "error", json: false }),
+    }).run({
+      prompt: "Replace answer.txt with correct.",
+      mode: "auto",
+      apply: false,
+      constraints: { modelFamily: "terra", effort: "medium", speedId: "standard", proofTier: "basic" },
+    });
+
+    assert.equal(result.applied, false);
+    assert.equal(result.originalStateUnchanged, true);
+    assert.match(result.bookkeepingWarnings?.join("\n") ?? "", /isolated cleanup failure/iu);
+    assert.equal(normalizeGitText(await readFile(join(root, "answer.txt"), "utf8")), "wrong\n");
+    const persisted = JSON.parse(await readFile(join(result.artifactDirectory, "result.json"), "utf8")) as {
+      applied?: boolean;
+      bookkeepingWarnings?: string[];
+    };
+    assert.equal(persisted.applied, false);
+    assert.match(persisted.bookkeepingWarnings?.join("\n") ?? "", /isolated cleanup failure/iu);
+  } finally {
+    CodexAppServer.prototype.deleteThread = originalDeleteThread;
+  }
+});
+
 void test("a backend model reroute is noncompliant and cannot enter route calibration", async () => {
   const root = await createTestRepository();
   const wrapperDirectory = await mkdtemp(join(tmpdir(), "counterlane-rerouted-arm-"));

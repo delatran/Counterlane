@@ -5,6 +5,14 @@ export interface VerificationCommandConfig {
   name: string;
   command: string[];
   required: boolean;
+  /** Host assertion that this command exercises the task contract, not only repository health. */
+  taskSpecific?: boolean;
+  /**
+   * Host-only assertion about how the immutable verifier treats candidate
+   * files. Product MCP certification requires `data-only`; repository policy
+   * cannot promote itself to host-owned proof with this field.
+   */
+  candidateCodePolicy?: "data-only" | "executes-candidate-code";
   timeoutMs?: number;
   environment?: Record<string, string>;
   /** Lowest proof tier that executes this command. */
@@ -87,6 +95,13 @@ export interface CounterlaneConfig {
     enableUltra: boolean;
     maxUsagePercentForMax: number;
     maxUsagePercentForUltra: number;
+    /** Minimum estimated first-pass completion score before a route can execute. */
+    minimumCompletion: {
+      normal: number;
+      elevated: number;
+      critical: number;
+    };
+    /** Minimum verified-reliability score after accounting for proof coverage. */
     minimumQuality: {
       normal: number;
       elevated: number;
@@ -157,6 +172,8 @@ export interface CounterlaneConfig {
     };
     requireAtLeastOne: boolean;
     failOnNoVerifier: boolean;
+    /** Refuse proof credit unless an appropriately tiered task-specific command is present. */
+    requireTaskSpecificCheck: boolean;
     defaultTimeoutMs: number;
     maximumOutputBytes: number;
     commands: VerificationCommandConfig[];
@@ -175,7 +192,9 @@ export interface CounterlaneConfig {
     normalizedCreditPenalty: number;
     latencyPenaltyPerMinute: number;
     failedTurnPenalty: number;
-    badEscapePenalty: number;
+    detectedVerificationFailurePenalty: number;
+    /** Deprecated legacy alias. It is accepted only as a migration input. */
+    badEscapePenalty?: number;
     practicalEquivalenceMargin: number;
   };
 }

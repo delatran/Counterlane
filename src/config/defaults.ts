@@ -69,6 +69,11 @@ export const DEFAULT_CONFIG: CounterlaneConfig = {
     enableUltra: false,
     maxUsagePercentForMax: 45,
     maxUsagePercentForUltra: 30,
+    minimumCompletion: {
+      normal: 0.78,
+      elevated: 0.9,
+      critical: 0.97,
+    },
     minimumQuality: {
       normal: 0.78,
       elevated: 0.9,
@@ -159,6 +164,7 @@ export const DEFAULT_CONFIG: CounterlaneConfig = {
     },
     requireAtLeastOne: true,
     failOnNoVerifier: true,
+    requireTaskSpecificCheck: false,
     defaultTimeoutMs: 10 * 60_000,
     maximumOutputBytes: 1_000_000,
     commands: [],
@@ -177,7 +183,7 @@ export const DEFAULT_CONFIG: CounterlaneConfig = {
     normalizedCreditPenalty: 1,
     latencyPenaltyPerMinute: 0.2,
     failedTurnPenalty: 35,
-    badEscapePenalty: 200,
+    detectedVerificationFailurePenalty: 200,
     practicalEquivalenceMargin: 0.05,
   },
 };
