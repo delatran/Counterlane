@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -117,9 +117,13 @@ void test("interpreter preload options are frozen but remain non-certifying", as
       minimumTier: "standard",
     }]);
     const plan = await freezeVerificationPlan(cwd, config, "standard", { authority: "host" });
+    const canonicalBootstrap = await realpath(bootstrap);
     assert.equal(plan.commands[0]?.codeOwnership, "unknown");
     assert.equal(plan.certifying, false);
-    assert.equal(plan.protectedAssets.some((asset) => asset.scope === "host" && asset.path === bootstrap), true);
+    assert.equal(
+      plan.protectedAssets.some((asset) => asset.scope === "host" && asset.path === canonicalBootstrap),
+      true,
+    );
 
     await writeFile(bootstrap, "export const bootstrap = false;\n", "utf8");
     const integrity = await verifyFrozenPlanIntegrity(cwd, plan);
